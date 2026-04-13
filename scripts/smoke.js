@@ -129,23 +129,27 @@ async function main() {
     },
   };
 
-  await assert.rejects(
-    () => deliverMessageToThread(fakeTimeoutSession, {
-      project: targetProject,
-      thread: {
-        threadId: "smoke-timeout",
-        name: "smoke timeout",
-        status: "idle",
-        createdAt: new Date().toISOString(),
-        lastUsedAt: new Date().toISOString(),
-      },
-      message: makeReplyMessage("relay smoke timeout"),
-      timeoutSec: 1,
-      resolution: "by_thread_id",
-      created: false,
-    }),
-    (error) => error instanceof RelayError && error.relayCode === "turn_timeout",
-  );
+  try {
+    await assert.rejects(
+      () => deliverMessageToThread(fakeTimeoutSession, {
+        project: targetProject,
+        thread: {
+          threadId: "smoke-timeout",
+          name: "smoke timeout",
+          status: "idle",
+          createdAt: new Date().toISOString(),
+          lastUsedAt: new Date().toISOString(),
+        },
+        message: makeReplyMessage("relay smoke timeout"),
+        timeoutSec: 1,
+        resolution: "by_thread_id",
+        created: false,
+      }),
+      (error) => error instanceof RelayError && error.relayCode === "turn_timeout",
+    );
+  } finally {
+    await releaseThreadLease({ threadId: "smoke-timeout" });
+  }
 
   console.log("relay smoke passed");
 }

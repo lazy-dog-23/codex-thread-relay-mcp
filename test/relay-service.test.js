@@ -6,6 +6,7 @@ import path from "node:path";
 
 import { RelayError } from "../src/errors.js";
 import { deliverMessageToThread, resolveDispatchThread } from "../src/relay-service.js";
+import { listActiveDispatches } from "../src/state-store.js";
 
 async function withRelayHome(t) {
   const previous = process.env.THREAD_RELAY_HOME;
@@ -106,6 +107,10 @@ test("deliverMessageToThread surfaces timeout failures as turn_timeout", async (
     }),
     (error) => error instanceof RelayError && error.relayCode === "turn_timeout",
   );
+
+  const activeDispatches = await listActiveDispatches("C:\\Trusted\\Relay");
+  assert.equal(activeDispatches.length, 1);
+  assert.equal(activeDispatches[0].threadId, "thread-1");
 });
 
 test("deliverMessageToThread retries one transient empty-rollout failure", async (t) => {

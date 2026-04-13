@@ -463,6 +463,7 @@ export async function deliverMessageToThread(session, options) {
     projectId: project.projectId,
     ttlMs: timeoutSeconds * 1_000 + 60_000,
   });
+  let releaseLeaseOnExit = true;
 
   try {
     await session.request("thread/resume", { threadId: thread.threadId });
@@ -542,12 +543,18 @@ export async function deliverMessageToThread(session, options) {
       payload,
     };
   } catch (error) {
-    throw normalizeRelayError(error);
+    const normalized = normalizeRelayError(error);
+    if (normalized.relayCode === "turn_timeout") {
+      releaseLeaseOnExit = false;
+    }
+    throw normalized;
   } finally {
-    await releaseThreadLease({
-      threadId: thread.threadId,
-      leaseId: lease.leaseId,
-    });
+    if (releaseLeaseOnExit) {
+      await releaseThreadLease({
+        threadId: thread.threadId,
+        leaseId: lease.leaseId,
+      });
+    }
   }
 }
 
