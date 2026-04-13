@@ -1,0 +1,18 @@
+{
+  "name": "codex-thread-relay-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MCP relay for cross-project Codex App thread communication on Windows.",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "check": "node --check src/index.js && node --check src/app-server-client.js && node --check src/project-registry.js && node --check src/state-store.js && node --check src/errors.js && node --check src/relay-service.js && node --check scripts/smoke.js",
+    "test": "node --test",
+    "smoke": "node scripts/smoke.js",
+    "audit:official": "npm audit --registry=https://registry.npmjs.org"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.3.6"
+  }
+}
