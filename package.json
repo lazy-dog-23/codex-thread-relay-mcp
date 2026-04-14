@@ -2,6 +2,7 @@
   "name": "codex-thread-relay-mcp",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "MCP relay for cross-project Codex App thread communication on Windows.",
   "type": "module",
   "scripts": {

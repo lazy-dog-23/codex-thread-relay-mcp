@@ -1,24 +1,22 @@
 # codex-thread-relay-mcp
 
-[中文说明](README.zh-CN.md)
+[English](README.md)
 
-`codex-thread-relay-mcp` is a Windows-first MCP server for relaying work across trusted Codex App threads and projects. It keeps the original four relay tools compatible, adds one-shot synchronous dispatch, and adds durable asynchronous dispatch with callback delivery and recovery.
+Windows Codex App thread relay MCP.
+
+这个项目提供本地 Windows Codex App 的跨项目线程中继能力。当前版本保持原有 4 个工具兼容，并新增同步 `relay_dispatch`、异步 `relay_dispatch_async` / `relay_dispatch_status` / `relay_dispatch_deliver` / `relay_dispatch_recover`，覆盖一跳编排、异步回传、状态查询、批量恢复和异常扫尾。
 
 ## What It Talks To
 
 - Windows Codex App state under `%USERPROFILE%\.codex`
 - A separate Windows Codex CLI app-server process
-- Projects that are already known and trusted by the Windows Codex App
+- Only projects already known and trusted by the Windows Codex App
 
-Out of scope for this release:
+WSL Codex CLI、cloud threads、archived threads 仍不在这一版范围内。
 
-- WSL Codex CLI
-- cloud threads
-- archived threads
+The spawned Windows Codex CLI app-server is started with `service_tier="fast"` so delegated turns do not fail on Windows installs that still reject the local `flex` path.
 
-The spawned Windows Codex CLI app-server uses `service_tier="fast"` so delegated turns keep working on Windows installs that reject the local `flex` path.
-
-## Public Tools
+## Tools
 
 - `relay_list_projects()`
 - `relay_list_threads({ projectId, query? })`
@@ -30,16 +28,16 @@ The spawned Windows Codex CLI app-server uses `service_tier="fast"` so delegated
 - `relay_dispatch_deliver({ dispatchId, callbackThreadId? })`
 - `relay_dispatch_recover({ dispatchId?, projectId?, callbackThreadId?, limit? })`
 
-Dispatch resolution order is fixed:
+`relay_dispatch` 的解析顺序固定为：
 
 1. `threadId`
-2. exact `threadName`
-3. unique `query` match
-4. create a new thread when `createIfMissing=true`
+2. `threadName` 精确命中
+3. `query` 唯一命中
+4. `createIfMissing=true` 时新建线程
 
 ## Error Model
 
-Public relay error codes:
+公开错误码统一收口为：
 
 - `project_untrusted`
 - `thread_not_found`
@@ -52,43 +50,35 @@ Public relay error codes:
 - `reply_missing`
 - `target_turn_failed`
 
-MCP responses surface them through `McpError.data.relayCode`.
+MCP 响应会通过 `McpError` 的 `data.relayCode` 暴露这些错误码。
 
-## Durable State and Leases
+## Relay State
 
-Relay-owned state is stored outside `CODEX_HOME`:
+Relay-owned state is stored separately from `CODEX_HOME`:
 
 - state: `%USERPROFILE%\.codex-relay\state.json`
 - per-thread lease: `%USERPROFILE%\.codex-relay\locks\*.lease.json`
 - per-dispatch lease: `%USERPROFILE%\.codex-relay\locks\dispatch-*.lease.json`
 
-Tracked records include:
+状态文件至少记录：
 
-- remembered thread metadata
-- active thread leases
-- async dispatch records
-- callback status and retry state
-- reply text, turn ids, timings, and failure metadata
+- remembered thread: `threadId` / `projectId` / `name` / `createdAt` / `lastUsedAt` / `lastTurnId`
+- active thread lease: `threadId` / `projectId` / `leaseId` / `acquiredAt` / `expiresAt` / `turnId` / `status`
+- async dispatch record: `dispatchId` / `projectId` / `threadId` / `threadName` / `dispatchStatus` / `callbackThreadId` / `callbackStatus` / `turnId` / `callbackTurnId` / `replyText` / `errorCode` / `errorMessage` / `timingMs` / `createdAt` / `acceptedAt` / `updatedAt`
 
-Async dispatch state machine:
+异步 dispatch 状态机：
 
 - dispatch: `queued -> running -> succeeded | failed | timed_out`
 - callback: `not_requested | pending | delivered | failed`
 
-Recovery surfaces:
+恢复策略：
 
-- `relay_dispatch_status` reads the durable record and can suggest recovery
-- `relay_dispatch_deliver` retries callback delivery only
-- `relay_dispatch_recover` resumes safe in-flight work, retries pending callbacks, or restarts a dispatch when that is the only safe option
+- `relay_dispatch_status` 负责读 durable 状态并给出 `recoverySuggested`，必要时会把 thread lease 中恢复到的 `turnId` 暴露出来
+- `relay_dispatch_deliver` 只重试 callback 投递
+- `relay_dispatch_recover` 会在安全时恢复已有 turn、重试 `pending/failed` callback，或在没有活动 lease 且没有已记录 turnId 时重启 dispatch；不给 `dispatchId` 时会按 `projectId` 批量扫可恢复的 dispatch
+- callback 回传消息现在带固定 envelope：`[Codex Relay Callback]` + `Event-Type: codex.relay.dispatch.completed.v1` + `BEGIN_CODEX_RELAY_CALLBACK_JSON` / `END_CODEX_RELAY_CALLBACK_JSON` 之间的机读 JSON
 
-Callback messages use the fixed envelope:
-
-- `[Codex Relay Callback]`
-- `Event-Type: codex.relay.dispatch.completed.v1`
-- `BEGIN_CODEX_RELAY_CALLBACK_JSON`
-- `END_CODEX_RELAY_CALLBACK_JSON`
-
-Empty threads that were created but have not yet appeared in `thread/list` are still reachable through remembered-thread state.
+创建线程后但还没出现在 `thread/list` 里的空线程，仍然会通过 remembered thread 机制被 relay 选中。
 
 ## Local Setup
 
@@ -97,7 +87,7 @@ cd <path-to-codex-thread-relay-mcp>
 npm install
 ```
 
-Default shared Windows home:
+默认使用共享 Windows home：
 
 - `CODEX_HOME=%USERPROFILE%\.codex`
 
@@ -129,23 +119,6 @@ tool_timeout_sec = 900
 [mcp_servers.threadRelay.env]
 THREAD_RELAY_CODEX_HOME = "<path-to-your-codex-home>"
 ```
-
-Replace the example path values before using the config.
-
-## Verification
-
-```powershell
-npm run check
-npm test
-npm run smoke
-pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1
-```
-
-The repo also includes `npm run soak` for longer async callback and recovery pressure runs.
-
-## License
-
-This repository is released under the MIT License. See [LICENSE](LICENSE).
 
 Replace the example path values with the absolute paths on your own machine.
 
