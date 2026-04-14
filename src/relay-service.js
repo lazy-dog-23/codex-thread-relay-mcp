@@ -115,6 +115,21 @@ function formatDispatchStatusText(payload) {
     .join("\n");
 }
 
+function formatActiveBusyDispatchText(payload) {
+  return [
+    `Target thread ${payload.threadName} [${payload.threadId}] is still busy with relay dispatch ${payload.dispatchId}; the new message was not delivered.`,
+    payload.turnId ? `Active turn: ${payload.turnId}.` : null,
+    `Dispatch ${payload.dispatchId}: ${payload.dispatchStatus}.`,
+    payload.recoverySuggested ? `Recovery: ${payload.recoverySuggested}.` : null,
+    payload.replyText ? `Reply: ${payload.replyText}` : null,
+    payload.errorCode ? `Error: [${payload.errorCode}] ${payload.errorMessage}` : null,
+    payload.warning ? `Warning: ${payload.warning}` : null,
+    `Relay state: ${payload.statePath}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 function formatDeliverStatusText(payload) {
   return [
     `Dispatch ${payload.dispatchId} callback status: ${payload.callbackStatus}.`,
@@ -379,6 +394,72 @@ function callbackTimeoutSeconds(record, session) {
   return Math.max(15, Math.min(DEFAULT_CALLBACK_TIMEOUT_SEC, desired));
 }
 
+function recordedTurnTimeoutSeconds(record, session) {
+  const sessionDefault = Math.ceil(session.turnTimeoutMs / 1000);
+  const desired = normalizeTimeoutSeconds(record?.timeoutSec, sessionDefault);
+  return Math.max(sessionDefault, desired);
+}
+
+function mergeWarningText(...parts) {
+  const merged = parts
+    .map((part) => (typeof part === "string" ? part.trim() : ""))
+    .filter(Boolean);
+  return merged.length > 0 ? merged.join(" | ") : null;
+}
+
+async function annotateActiveThreadLeaseError(error) {
+  const normalized = normalizeRelayError(error);
+  if (normalized.relayCode !== "target_busy") {
+    return normalized;
+  }
+
+  const activeLease = normalized.details?.activeLease;
+  const activeDispatchId = typeof activeLease?.dispatchId === "string" && activeLease.dispatchId.trim().length > 0
+    ? activeLease.dispatchId.trim()
+    : null;
+  if (!activeDispatchId) {
+    return normalized;
+  }
+
+  const activeRecord = await getDispatchRecord(activeDispatchId);
+  const activeDispatchStatus = activeRecord?.dispatchStatus ?? "running";
+  const activeTurnId = activeLease?.turnId ?? activeRecord?.turnId ?? null;
+  normalized.details = {
+    ...normalized.details,
+    activeDispatchId,
+    activeDispatchStatus,
+    activeTurnId,
+    recoverySuggested: "Use relay_dispatch_status or relay_dispatch_recover with the active dispatch id.",
+  };
+  normalized.message = `Thread ${activeLease.threadId ?? normalized.details?.threadId ?? "unknown"} already has an active relay dispatch lease from dispatch ${activeDispatchId} (${activeDispatchStatus}${activeTurnId ? `, turn ${activeTurnId}` : ""}). Use relay_dispatch_status or relay_dispatch_recover before sending another message.`;
+  return normalized;
+}
+
+async function buildActiveBusyDispatchResult(error) {
+  const normalized = await annotateActiveThreadLeaseError(error);
+  const activeDispatchId = typeof normalized.details?.activeDispatchId === "string" && normalized.details.activeDispatchId.trim().length > 0
+    ? normalized.details.activeDispatchId.trim()
+    : null;
+  if (!activeDispatchId) {
+    return null;
+  }
+
+  const record = await getDispatchRecord(activeDispatchId);
+  if (!record) {
+    return null;
+  }
+
+  const payload = buildDispatchStatusPayload(record, await inspectDispatchRuntime(record));
+  return {
+    text: formatActiveBusyDispatchText(payload),
+    payload: {
+      ...payload,
+      busy: true,
+      newMessageDelivered: false,
+    },
+  };
+}
+
 function workerScriptPath() {
   return fileURLToPath(new URL("./relay-async-worker.js", import.meta.url));
 }
@@ -411,6 +492,68 @@ function normalizeDispatchTerminalError(error) {
     errorCode: normalized.relayCode,
     errorMessage: normalized.message,
     details: normalized.details ?? {},
+  };
+}
+
+async function startSyncTimeoutRecoveryDispatch({
+  project,
+  thread,
+  message,
+  timeoutSec,
+  resolution,
+  created,
+  warning,
+  startedAt,
+  turnId,
+  timeoutMessage,
+  scheduleRecoveryWorker = scheduleAsyncDispatchWorker,
+}) {
+  const acceptedAt = new Date(startedAt).toISOString();
+  const dispatchId = randomUUID();
+  let record = await createDispatchRecord({
+    dispatchId,
+    projectId: project.projectId,
+    threadId: thread.threadId,
+    threadName: thread.name,
+    message,
+    timeoutSec,
+    created,
+    resolution,
+    dispatchStatus: "running",
+    callbackThreadId: null,
+    callbackStatus: "not_requested",
+    turnId,
+    errorCode: "turn_timeout",
+    errorMessage: timeoutMessage,
+    createdAt: acceptedAt,
+    acceptedAt,
+    updatedAt: new Date().toISOString(),
+    warning: mergeWarningText(
+      warning,
+      "Created from a sync relay timeout; the same target turn is continuing in background.",
+    ),
+  });
+
+  let backgroundRecoveryScheduled = false;
+  let schedulingWarning = null;
+  try {
+    await Promise.resolve(scheduleRecoveryWorker(dispatchId));
+    backgroundRecoveryScheduled = true;
+  } catch (error) {
+    const normalized = normalizeRelayError(error);
+    schedulingWarning = `Background recovery worker could not be scheduled: ${normalized.message}`;
+    record = await updateDispatchRecord(dispatchId, (current) => ({
+      ...current,
+      warning: mergeWarningText(current.warning, schedulingWarning),
+      updatedAt: new Date().toISOString(),
+    })) ?? record;
+  }
+
+  return {
+    dispatchId,
+    record,
+    backgroundRecoveryScheduled,
+    schedulingWarning,
   };
 }
 
@@ -880,27 +1023,37 @@ export async function deliverMessageToThread(session, options) {
     created,
     warning = null,
     onTurnStarted = null,
+    createRecoveryDispatchOnTimeout = false,
+    scheduleRecoveryWorker = scheduleAsyncDispatchWorker,
   } = options;
 
   if (isTargetBusy(thread)) {
-    throw relayError("target_busy", `Thread ${thread.threadId} is already active in Codex.`, {
+    const activeLease = await getActiveThreadLease(thread.threadId);
+    throw await annotateActiveThreadLeaseError(relayError("target_busy", `Thread ${thread.threadId} is already active in Codex.`, {
       threadId: thread.threadId,
       projectId: project.projectId,
       status: thread.status,
-    });
+      activeLease,
+    }));
   }
 
   const startedAt = Date.now();
   const timeoutSeconds = normalizeTimeoutSeconds(timeoutSec, Math.ceil(session.turnTimeoutMs / 1000));
-  const lease = await acquireThreadLease({
-    threadId: thread.threadId,
-    projectId: project.projectId,
-    ttlMs: timeoutSeconds * 1_000 + 60_000,
-  });
   let releaseLeaseOnExit = true;
   let turnId = null;
+  let lease = null;
 
   try {
+    try {
+      lease = await acquireThreadLease({
+        threadId: thread.threadId,
+        projectId: project.projectId,
+        ttlMs: timeoutSeconds * 1_000 + 60_000,
+      });
+    } catch (error) {
+      throw await annotateActiveThreadLeaseError(error);
+    }
+
     await session.request("thread/resume", { threadId: thread.threadId });
     const started = await session.request(
       "turn/start",
@@ -946,7 +1099,7 @@ export async function deliverMessageToThread(session, options) {
       startedAt,
     });
   } catch (error) {
-    const normalized = normalizeRelayError(error);
+    const normalized = await annotateActiveThreadLeaseError(error);
     if (normalized.relayCode === "turn_timeout") {
       releaseLeaseOnExit = false;
       normalized.details = {
@@ -954,10 +1107,51 @@ export async function deliverMessageToThread(session, options) {
         threadId: thread.threadId,
         turnId,
       };
+      if (createRecoveryDispatchOnTimeout && turnId) {
+        try {
+          const recovery = await startSyncTimeoutRecoveryDispatch({
+            project,
+            thread,
+            message,
+            timeoutSec: timeoutSeconds,
+            resolution,
+            created,
+            warning,
+            startedAt,
+            turnId,
+            timeoutMessage: normalized.message,
+            scheduleRecoveryWorker,
+          });
+          await updateThreadLease({
+            threadId: thread.threadId,
+            leaseId: lease?.leaseId ?? null,
+            dispatchId: recovery.dispatchId,
+          });
+          normalized.details = {
+            ...normalized.details,
+            recoveryDispatchId: recovery.dispatchId,
+            recoveryDispatchStatus: recovery.record.dispatchStatus,
+            recoveryScheduled: recovery.backgroundRecoveryScheduled,
+            recoveryStatePath: relayStatePath(),
+            recoverySuggested: "Use relay_dispatch_status or relay_dispatch_recover with this dispatch id.",
+            recoveryWarning: recovery.schedulingWarning ?? undefined,
+          };
+          normalized.message = recovery.backgroundRecoveryScheduled
+            ? `${normalized.message} Recovery dispatch ${recovery.dispatchId} is continuing in background.`
+            : `${normalized.message} Recovery dispatch ${recovery.dispatchId} was recorded for manual recovery.`;
+        } catch (recoveryError) {
+          const recoveryFailure = normalizeRelayError(recoveryError);
+          normalized.details = {
+            ...normalized.details,
+            recoverySuggested: "Wait for the active thread lease to expire, or inspect the target thread manually before replaying.",
+            recoveryRecordingError: recoveryFailure.message,
+          };
+        }
+      }
     }
     throw normalized;
   } finally {
-    if (releaseLeaseOnExit) {
+    if (releaseLeaseOnExit && lease?.leaseId) {
       await releaseThreadLease({
         threadId: thread.threadId,
         leaseId: lease.leaseId,
@@ -1100,7 +1294,7 @@ async function executeDispatchTurn(session, dispatchId, record) {
             project: target.project,
             thread: target.thread,
             turnId: record.turnId,
-            timeoutSec: record.timeoutSec,
+            timeoutSec: recordedTurnTimeoutSeconds(record, session),
             resolution: record.resolution,
             created: record.created,
             warning: record.warning ?? null,
@@ -1383,14 +1577,24 @@ export async function createThreadAction(session, { projectId, name }) {
 export async function sendWaitAction(session, { threadId, message, timeoutSec }) {
   const projects = await getTrustedProjectsFromSession(session);
   const { project, thread } = await resolveThreadTarget(session, projects, threadId);
-  return deliverMessageToThread(session, {
-    project,
-    thread,
-    message,
-    timeoutSec,
-    resolution: "by_thread_id",
-    created: false,
-  });
+  try {
+    return await deliverMessageToThread(session, {
+      project,
+      thread,
+      message,
+      timeoutSec,
+      resolution: "by_thread_id",
+      created: false,
+      createRecoveryDispatchOnTimeout: true,
+      scheduleRecoveryWorker: () => {},
+    });
+  } catch (error) {
+    const busyResult = await buildActiveBusyDispatchResult(error);
+    if (busyResult) {
+      return busyResult;
+    }
+    throw error;
+  }
 }
 
 export async function dispatchAction(session, {
@@ -1410,15 +1614,25 @@ export async function dispatchAction(session, {
     createIfMissing,
   });
 
-  return deliverMessageToThread(session, {
-    project: target.project,
-    thread: target.targetThread,
-    message,
-    timeoutSec,
-    resolution: target.resolution,
-    created: target.created,
-    warning: target.warning,
-  });
+  try {
+    return await deliverMessageToThread(session, {
+      project: target.project,
+      thread: target.targetThread,
+      message,
+      timeoutSec,
+      resolution: target.resolution,
+      created: target.created,
+      warning: target.warning,
+      createRecoveryDispatchOnTimeout: true,
+      scheduleRecoveryWorker: () => {},
+    });
+  } catch (error) {
+    const busyResult = await buildActiveBusyDispatchResult(error);
+    if (busyResult) {
+      return busyResult;
+    }
+    throw error;
+  }
 }
 
 export async function dispatchAsyncAction(session, {

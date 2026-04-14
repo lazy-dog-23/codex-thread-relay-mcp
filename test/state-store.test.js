@@ -81,10 +81,13 @@ test("acquireThreadLease persists a dispatch lease and rejects a second active l
   const updatedLease = await updateThreadLease({
     threadId: "thread-lease",
     leaseId: lease.leaseId,
+    dispatchId: "dispatch-thread-lease",
     turnId: "turn-lease-1",
   });
   assert.equal(updatedLease?.turnId, "turn-lease-1");
+  assert.equal(updatedLease?.dispatchId, "dispatch-thread-lease");
   assert.equal((await getActiveThreadLease("thread-lease"))?.turnId, "turn-lease-1");
+  assert.equal((await getActiveThreadLease("thread-lease"))?.dispatchId, "dispatch-thread-lease");
 
   await assert.rejects(
     () => acquireThreadLease({

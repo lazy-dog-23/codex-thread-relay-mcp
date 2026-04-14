@@ -106,6 +106,7 @@ function normalizeThreadLease(record) {
     acquiredAt,
     expiresAt,
     ownerPid: Number.isInteger(record.ownerPid) ? record.ownerPid : null,
+    dispatchId: normalizeOptionalString(record.dispatchId),
     turnId: normalizeOptionalString(record.turnId),
     status: THREAD_LEASE_STATUSES.has(status) ? status : "running",
   };
@@ -632,12 +633,13 @@ export async function updateDispatchRecord(dispatchId, mutator) {
 }
 
 export async function updateThreadLease(params) {
-  const { threadId, leaseId = null, turnId, status } = params;
+  const { threadId, leaseId = null, dispatchId, turnId, status } = params;
   const normalizedThreadId = normalizeOptionalString(threadId, "");
   if (!normalizedThreadId) {
     return null;
   }
   const hasTurnIdPatch = Object.prototype.hasOwnProperty.call(params, "turnId");
+  const hasDispatchIdPatch = Object.prototype.hasOwnProperty.call(params, "dispatchId");
 
   let updatedLease = null;
   await updateState((state) => {
@@ -651,6 +653,9 @@ export async function updateThreadLease(params) {
 
     const normalized = normalizeThreadLease({
       ...current,
+      dispatchId: hasDispatchIdPatch
+        ? normalizeOptionalString(dispatchId)
+        : current.dispatchId ?? null,
       turnId: hasTurnIdPatch
         ? normalizeOptionalString(turnId)
         : current.turnId ?? null,
@@ -679,6 +684,7 @@ export async function updateThreadLease(params) {
   if (existingFileLease && (!leaseId || existingFileLease.leaseId === leaseId)) {
     const mergedLease = normalizeThreadLease({
       ...existingFileLease,
+      dispatchId: updatedLease.dispatchId ?? existingFileLease.dispatchId ?? null,
       turnId: updatedLease.turnId ?? existingFileLease.turnId ?? null,
       status: updatedLease.status,
       acquiredAt: updatedLease.acquiredAt,
@@ -694,7 +700,7 @@ export async function updateThreadLease(params) {
   return updatedLease;
 }
 
-export async function acquireThreadLease({ threadId, projectId, ttlMs, turnId = null, status = "running" }) {
+export async function acquireThreadLease({ threadId, projectId, ttlMs, dispatchId = null, turnId = null, status = "running" }) {
   const normalizedThreadId = String(threadId);
   const normalizedProjectId = String(projectId);
   const now = Date.now();
@@ -706,6 +712,7 @@ export async function acquireThreadLease({ threadId, projectId, ttlMs, turnId = 
     acquiredAt: new Date(now).toISOString(),
     expiresAt: new Date(now + leaseTtlMs).toISOString(),
     ownerPid: process.pid,
+    dispatchId: normalizeOptionalString(dispatchId),
     turnId: normalizeOptionalString(turnId),
     status: THREAD_LEASE_STATUSES.has(status) ? status : "running",
   };

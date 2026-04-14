@@ -7,7 +7,7 @@
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
-    "check": "node --check src/index.js && node --check src/app-server-client.js && node --check src/project-registry.js && node --check src/state-store.js && node --check src/errors.js && node --check src/relay-service.js && node --check src/relay-async-worker.js && node --check scripts/smoke.js && node --check scripts/soak.js",
+    "check": "node --check src/index.js && node --check src/app-server-client.js && node --check src/project-registry.js && node --check src/state-store.js && node --check src/errors.js && node --check src/relay-service.js && node --check src/relay-async-worker.js && node --check src/tool-runner.js && node --check scripts/smoke.js && node --check scripts/soak.js",
     "test": "node --test",
     "smoke": "node scripts/smoke.js",
     "soak": "node scripts/soak.js",

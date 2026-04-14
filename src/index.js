@@ -2,8 +2,6 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-import { CodexAppServerSession } from "./app-server-client.js";
-import { toMcpError } from "./errors.js";
 import {
   createThreadAction,
   dispatchAsyncAction,
@@ -15,41 +13,7 @@ import {
   listThreadsAction,
   sendWaitAction,
 } from "./relay-service.js";
-
-function makeToolResult(text, structuredContent) {
-  return {
-    content: [{ type: "text", text }],
-    structuredContent,
-  };
-}
-
-async function withSession(handler) {
-  const session = new CodexAppServerSession();
-  await session.open();
-  try {
-    return await handler(session);
-  } finally {
-    await session.close();
-  }
-}
-
-async function runTool(handler) {
-  try {
-    const result = await withSession(handler);
-    return makeToolResult(result.text, result.payload);
-  } catch (error) {
-    throw toMcpError(error);
-  }
-}
-
-async function runLocalTool(handler) {
-  try {
-    const result = await handler();
-    return makeToolResult(result.text, result.payload);
-  } catch (error) {
-    throw toMcpError(error);
-  }
-}
+import { runLocalTool, runTool } from "./tool-runner.js";
 
 const server = new McpServer({
   name: "codex-thread-relay-mcp",
@@ -87,7 +51,7 @@ server.tool(
 
 server.tool(
   "relay_send_wait",
-  "Send one delegated request to an existing local target thread and wait for its final text reply.",
+  "Send one delegated request to an existing local target thread and wait for its final text reply. Long sync timeouts return a recoveryDispatchId for follow-up status or recovery.",
   {
     threadId: z.string().min(1),
     message: z.string().trim().min(1),
@@ -99,7 +63,7 @@ server.tool(
 
 server.tool(
   "relay_dispatch",
-  "Resolve or create a target thread inside a trusted project, send one delegated request, and wait for the final text reply.",
+  "Resolve or create a target thread inside a trusted project, send one delegated request, and wait for the final text reply. Long sync timeouts return a recoveryDispatchId for follow-up status or recovery.",
   {
     projectId: z.string().min(1),
     message: z.string().trim().min(1),
