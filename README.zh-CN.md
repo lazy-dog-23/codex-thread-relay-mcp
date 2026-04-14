@@ -68,6 +68,18 @@ THREAD_RELAY_CODEX_HOME = "<path-to-your-codex-home>"
 - 如果 Codex 里看不到 relay 工具，先检查 MCP 配置路径，再重启 Codex App。
 - 如果 `smoke` 很早就失败，先确认 Codex App 正在运行，并且目标项目已经被 Windows Codex App 标记为 trusted。
 - 如果 async callback 长时间停在 `pending`，先看源线程是否正忙，再使用 `relay_dispatch_deliver` 或 `relay_dispatch_recover`。
+- 如果 `relay_send_wait` 或同步 `relay_dispatch` 在长回合上超时，现在错误里会带 `recoveryDispatchId`。可以先用 `relay_dispatch_status` 看后台进度，再用 `relay_dispatch_recover` 显式续等；长自治流程仍然优先用 `relay_dispatch_async`。
+
+## 近期验证结论（2026-04-14）
+
+在真实链路上做了 thread-relay 回归，结果如下：
+
+1. `dispatchId=493240d8-e072-413e-9199-85f3eb870c23`：`send_wait` 超时后，`dispatch_status` 最终成功，拿到 `RELAY_TEST_MARKER=FRONTEND_RELAY_READONLY_OK`。
+2. `dispatchId=e7eb7be9-0f09-4eee-a13c-45352639b224`：再次超时后，后续 `dispatch_status` 成功，拿到 `RELAY_FOLLOWUP_MARKER=POST_RECOVERY_THREAD_FREE_OK`。
+3. recover 后直接同步再发一条，45 秒窗口内成功回包，拿到 `RELAY_DIRECT_SYNC_MARKER=OK`。
+4. `dispatchId=fa43117f-dbf0-4552-89bc-0d0a79d2a0a0`：故意 1 秒超时后走 `relay_dispatch_recover`，最终成功，拿到 `RELAY_RECOVER_PATH_MARKER=OK`。
+
+结论：`timeout -> status`、`timeout -> recover`、以及 recover 后续消息都已稳定跑通。剩余不稳定点来自目标线程本身的耗时波动，短 `timeoutSec` 仍可能超时，但不会再卡死，且可通过 status/recover 正常收口。
 
 ## 公开工具
 
