@@ -2,7 +2,9 @@
 
 [中文说明](README.zh-CN.md)
 
-`codex-thread-relay-mcp` is a Windows-first MCP server for relaying work across trusted Codex App threads and projects. It keeps the original four relay tools compatible, adds one-shot synchronous dispatch, and adds durable asynchronous dispatch with callback delivery and recovery.
+`codex-thread-relay-mcp` lets one Codex App thread send work to another thread and get the result back, including across different projects or sessions.
+
+This repository provides that thread-communication layer as an MCP server: trusted-project lookup, thread create/reuse, synchronous dispatch, asynchronous callback delivery, status queries, and recovery.
 
 ## What It Talks To
 

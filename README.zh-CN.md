@@ -2,9 +2,9 @@
 
 [English](README.md)
 
-Windows Codex App 线程 relay MCP。
+`codex-thread-relay-mcp` 的作用很直接：让一个 Codex App 线程把消息发到另一个线程，再把结果回传回来，支持跨项目、跨会话。
 
-这个项目提供本地 Windows Codex App 的跨项目线程中继能力。当前版本保持原有 4 个工具兼容，并新增同步 `relay_dispatch`、异步 `relay_dispatch_async` / `relay_dispatch_status` / `relay_dispatch_deliver` / `relay_dispatch_recover`，覆盖一跳编排、异步回传、状态查询、批量恢复和异常扫尾。
+这个仓库提供的就是这层线程通信能力：trusted project 查询、线程创建/复用、同步 dispatch、异步 callback、状态查询和恢复。
 
 ## 它会和什么交互
 
