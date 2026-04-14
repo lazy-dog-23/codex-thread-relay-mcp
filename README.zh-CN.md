@@ -74,10 +74,10 @@ THREAD_RELAY_CODEX_HOME = "<path-to-your-codex-home>"
 
 在真实链路上做了 thread-relay 回归，结果如下：
 
-1. `dispatchId=493240d8-e072-413e-9199-85f3eb870c23`：`send_wait` 超时后，`dispatch_status` 最终成功，拿到 `RELAY_TEST_MARKER=FRONTEND_RELAY_READONLY_OK`。
-2. `dispatchId=e7eb7be9-0f09-4eee-a13c-45352639b224`：再次超时后，后续 `dispatch_status` 成功，拿到 `RELAY_FOLLOWUP_MARKER=POST_RECOVERY_THREAD_FREE_OK`。
+1. `dispatchId=<example-dispatch-a>`：`send_wait` 超时后，`dispatch_status` 最终成功，拿到 `RELAY_TEST_MARKER=FRONTEND_RELAY_READONLY_OK`。
+2. `dispatchId=<example-dispatch-b>`：再次超时后，后续 `dispatch_status` 成功，拿到 `RELAY_FOLLOWUP_MARKER=POST_RECOVERY_THREAD_FREE_OK`。
 3. recover 后直接同步再发一条，45 秒窗口内成功回包，拿到 `RELAY_DIRECT_SYNC_MARKER=OK`。
-4. `dispatchId=fa43117f-dbf0-4552-89bc-0d0a79d2a0a0`：故意 1 秒超时后走 `relay_dispatch_recover`，最终成功，拿到 `RELAY_RECOVER_PATH_MARKER=OK`。
+4. `dispatchId=<example-dispatch-c>`：故意 1 秒超时后走 `relay_dispatch_recover`，最终成功，拿到 `RELAY_RECOVER_PATH_MARKER=OK`。
 
 结论：`timeout -> status`、`timeout -> recover`、以及 recover 后续消息都已稳定跑通。剩余不稳定点来自目标线程本身的耗时波动，短 `timeoutSec` 仍可能超时，但不会再卡死，且可通过 status/recover 正常收口。
 
