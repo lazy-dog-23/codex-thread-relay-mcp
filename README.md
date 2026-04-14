@@ -68,6 +68,18 @@ Replace the example path values before using the config, then restart the Codex 
 - If the relay tools do not appear in Codex, check the MCP config path and restart the Codex App.
 - If `smoke` fails early, confirm the Codex App is running and the target project is already trusted by the Windows Codex App.
 - If async callback delivery stays `pending`, check whether the source thread is busy, then use `relay_dispatch_deliver` or `relay_dispatch_recover`.
+- If `relay_send_wait` or synchronous `relay_dispatch` times out on a long target turn, the timeout now includes a `recoveryDispatchId`. Use `relay_dispatch_status` to inspect progress, `relay_dispatch_recover` to resume waiting explicitly, and prefer `relay_dispatch_async` for long-running autonomy loops.
+
+## Recent Validation (2026-04-14)
+
+Live thread-relay regression run on a trusted project/thread:
+
+1. `dispatchId=493240d8-e072-413e-9199-85f3eb870c23`: `send_wait` timed out, `dispatch_status` completed, and returned `RELAY_TEST_MARKER=FRONTEND_RELAY_READONLY_OK`.
+2. `dispatchId=e7eb7be9-0f09-4eee-a13c-45352639b224`: another timeout, follow-up `dispatch_status` completed, returned `RELAY_FOLLOWUP_MARKER=POST_RECOVERY_THREAD_FREE_OK`.
+3. Immediate sync send after recovery returned within 45 seconds with `RELAY_DIRECT_SYNC_MARKER=OK`.
+4. `dispatchId=fa43117f-dbf0-4552-89bc-0d0a79d2a0a0`: forced 1-second timeout, `relay_dispatch_recover` completed with `RELAY_RECOVER_PATH_MARKER=OK`.
+
+Outcome: `timeout -> status`, `timeout -> recover`, and post-recovery sends are stable. Remaining variability is target-thread runtime duration; short `timeoutSec` values may still time out, but recovery paths close cleanly.
 
 ## Public Tools
 
