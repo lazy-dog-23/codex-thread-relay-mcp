@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codex-auto.local/schema/state.schema.json",
+  "title": "AutonomyStateFile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "current_goal_id",
+    "current_task_id",
+    "cycle_status",
+    "run_mode",
+    "last_planner_run_at",
+    "last_worker_run_at",
+    "last_result",
+    "consecutive_worker_failures",
+    "needs_human_review",
+    "open_blocker_count",
+    "report_thread_id",
+    "autonomy_branch",
+    "sprint_active",
+    "paused",
+    "pause_reason"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "current_goal_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "current_task_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "cycle_status": {
+      "type": "string",
+      "enum": [
+        "idle",
+        "planning",
+        "working",
+        "blocked",
+        "review_pending"
+      ]
+    },
+    "run_mode": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "sprint",
+        "cruise",
+        null
+      ]
+    },
+    "last_planner_run_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "last_worker_run_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "last_result": {
+      "type": "string",
+      "enum": [
+        "noop",
+        "planned",
+        "passed",
+        "failed",
+        "blocked"
+      ]
+    },
+    "consecutive_worker_failures": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "needs_human_review": {
+      "type": "boolean"
+    },
+    "open_blocker_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "report_thread_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "autonomy_branch": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sprint_active": {
+      "type": "boolean"
+    },
+    "paused": {
+      "type": "boolean"
+    },
+    "pause_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "last_thread_summary_sent_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "last_inbox_run_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    }
+  }
+}

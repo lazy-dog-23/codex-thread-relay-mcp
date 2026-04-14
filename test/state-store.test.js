@@ -5,12 +5,21 @@ import os from "node:os";
 import path from "node:path";
 
 import {
+  acquireDispatchLease,
   acquireThreadLease,
+  createDispatchRecord,
+  getActiveDispatchLease,
+  getActiveThreadLease,
+  getDispatchRecord,
+  listDispatchRecords,
   listActiveDispatches,
   listRememberedThreads,
+  releaseDispatchLease,
   releaseThreadLease,
   relayStatePath,
   rememberCreatedThread,
+  updateDispatchRecord,
+  updateThreadLease,
 } from "../src/state-store.js";
 
 async function withRelayHome(t) {
@@ -67,6 +76,15 @@ test("acquireThreadLease persists a dispatch lease and rejects a second active l
   const active = await listActiveDispatches("C:\\Trusted\\Relay");
   assert.equal(active.length, 1);
   assert.equal(active[0].threadId, "thread-lease");
+  assert.equal((await getActiveThreadLease("thread-lease"))?.threadId, "thread-lease");
+
+  const updatedLease = await updateThreadLease({
+    threadId: "thread-lease",
+    leaseId: lease.leaseId,
+    turnId: "turn-lease-1",
+  });
+  assert.equal(updatedLease?.turnId, "turn-lease-1");
+  assert.equal((await getActiveThreadLease("thread-lease"))?.turnId, "turn-lease-1");
 
   await assert.rejects(
     () => acquireThreadLease({
@@ -83,4 +101,73 @@ test("acquireThreadLease persists a dispatch lease and rejects a second active l
   });
   const afterRelease = await listActiveDispatches("C:\\Trusted\\Relay");
   assert.equal(afterRelease.length, 0);
+  assert.equal(await getActiveThreadLease("thread-lease"), null);
+});
+
+test("dispatch records persist async dispatch state and worker leases", async (t) => {
+  await withRelayHome(t);
+
+  const acceptedAt = "2026-04-13T02:00:00.000Z";
+  await createDispatchRecord({
+    dispatchId: "dispatch-1",
+    projectId: "C:\\Trusted\\Relay",
+    threadId: "thread-1",
+    threadName: "relay target",
+    message: "reply exactly relay async",
+    timeoutSec: 90,
+    created: false,
+    resolution: "by_thread_id",
+    callbackThreadId: "source-thread",
+    callbackStatus: "pending",
+    dispatchStatus: "queued",
+    createdAt: acceptedAt,
+    acceptedAt,
+    updatedAt: acceptedAt,
+  });
+
+  const stored = await getDispatchRecord("dispatch-1");
+  assert.ok(stored);
+  assert.equal(stored.dispatchStatus, "queued");
+  assert.equal(stored.callbackStatus, "pending");
+  assert.equal(stored.callbackThreadId, "source-thread");
+  assert.deepEqual(
+    (await listDispatchRecords("C:\\Trusted\\Relay")).map((item) => item.dispatchId),
+    ["dispatch-1"],
+  );
+
+  const lease = await acquireDispatchLease({
+    dispatchId: "dispatch-1",
+    ttlMs: 60_000,
+  });
+  assert.equal((await getActiveDispatchLease("dispatch-1"))?.dispatchId, "dispatch-1");
+
+  await assert.rejects(
+    () => acquireDispatchLease({
+      dispatchId: "dispatch-1",
+      ttlMs: 60_000,
+    }),
+    (error) => error?.relayCode === "target_busy",
+  );
+
+  const updated = await updateDispatchRecord("dispatch-1", (current) => ({
+    ...current,
+    dispatchStatus: "succeeded",
+    callbackStatus: "delivered",
+    turnId: "turn-123",
+    replyText: "relay async ok",
+    timingMs: 1234,
+    updatedAt: "2026-04-13T02:00:02.000Z",
+  }));
+
+  assert.ok(updated);
+  assert.equal(updated.dispatchStatus, "succeeded");
+  assert.equal(updated.callbackStatus, "delivered");
+  assert.equal(updated.turnId, "turn-123");
+  assert.equal(updated.replyText, "relay async ok");
+
+  await releaseDispatchLease({
+    dispatchId: "dispatch-1",
+    leaseId: lease.leaseId,
+  });
+  assert.equal(await getActiveDispatchLease("dispatch-1"), null);
 });

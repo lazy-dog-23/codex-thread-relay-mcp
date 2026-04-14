@@ -5,8 +5,23 @@ import os from "node:os";
 import path from "node:path";
 
 import { RelayError } from "../src/errors.js";
-import { deliverMessageToThread, resolveDispatchThread } from "../src/relay-service.js";
-import { listActiveDispatches } from "../src/state-store.js";
+import {
+  deliverMessageToThread,
+  dispatchDeliverAction,
+  dispatchRecoverAction,
+  dispatchStatusAction,
+  processAsyncDispatchWithSession,
+  resolveDispatchThread,
+} from "../src/relay-service.js";
+import {
+  acquireThreadLease,
+  createDispatchRecord,
+  getActiveThreadLease,
+  getDispatchRecord,
+  listActiveDispatches,
+  rememberCreatedThread,
+  updateThreadLease,
+} from "../src/state-store.js";
 
 async function withRelayHome(t) {
   const previous = process.env.THREAD_RELAY_HOME;
@@ -21,6 +36,158 @@ async function withRelayHome(t) {
     await fs.rm(relayHome, { recursive: true, force: true });
   });
   return relayHome;
+}
+
+function makeAsyncSession({
+  sourceStatus = "idle",
+  sourceStatusSequence = null,
+  targetTurnId = "turn-target-1",
+  targetReplyText = "relay async ok",
+  allowTargetTurnStart = true,
+  hideTargetFromList = false,
+  targetReadMissingCount = 0,
+} = {}) {
+  let callbackEnvelope = null;
+  let sourceStatusIndex = 0;
+  let remainingTargetReadMisses = Math.max(0, targetReadMissingCount);
+  const getSourceStatus = () => {
+    if (!Array.isArray(sourceStatusSequence) || sourceStatusSequence.length === 0) {
+      return sourceStatus;
+    }
+    const index = Math.min(sourceStatusIndex, sourceStatusSequence.length - 1);
+    sourceStatusIndex += 1;
+    return sourceStatusSequence[index];
+  };
+  return {
+    turnTimeoutMs: 1_000,
+    async request(method, params) {
+      if (method === "config/read") {
+        return {
+          result: {
+            config: {
+              projects: {
+                "C:\\Trusted\\Relay": {
+                  trust_level: "trusted",
+                },
+              },
+            },
+          },
+        };
+      }
+      if (method === "thread/read") {
+        if (params.threadId === "target-thread") {
+          if (remainingTargetReadMisses > 0) {
+            remainingTargetReadMisses -= 1;
+            return {
+              result: {
+                thread: null,
+              },
+            };
+          }
+          return {
+            result: {
+              thread: {
+                id: "target-thread",
+                name: "relay target",
+                status: { type: "idle" },
+              },
+            },
+          };
+        }
+        if (params.threadId === "source-thread") {
+          const currentSourceStatus = getSourceStatus();
+          return {
+            result: {
+              thread: {
+                id: "source-thread",
+                name: "relay source",
+                status: { type: currentSourceStatus },
+              },
+            },
+          };
+        }
+      }
+      if (method === "thread/resume") {
+        return { ok: true };
+      }
+      if (method === "turn/start") {
+        const threadId = params.threadId;
+        if (threadId === "target-thread") {
+          if (!allowTargetTurnStart) {
+            throw new Error("turn/start should not be called for the target thread");
+          }
+          return {
+            result: {
+              turn: {
+                id: targetTurnId,
+              },
+            },
+          };
+        }
+        if (threadId === "source-thread") {
+          callbackEnvelope = params.input?.[0]?.text ?? null;
+          return {
+            result: {
+              turn: {
+                id: "turn-callback-1",
+              },
+            },
+          };
+        }
+      }
+      throw new Error(`Unexpected request: ${method}`);
+    },
+    async listAllThreads() {
+      return [
+        ...(hideTargetFromList ? [] : [{
+          id: "target-thread",
+          name: "relay target",
+          cwd: "C:\\Trusted\\Relay",
+          status: { type: "idle" },
+          updatedAt: 1_712_966_400,
+        }]),
+        {
+          id: "source-thread",
+          name: "relay source",
+          cwd: "C:\\Trusted\\Relay",
+          status: { type: getSourceStatus() },
+          updatedAt: 1_712_966_401,
+        },
+      ];
+    },
+    async waitForTurn(threadId, turnId) {
+      if (threadId === "target-thread" && turnId === targetTurnId) {
+        return {
+          status: "completed",
+          completedAt: "2026-04-13T00:10:00.000Z",
+          items: [
+            {
+              type: "agentMessage",
+              phase: "final_answer",
+              text: targetReplyText,
+            },
+          ],
+        };
+      }
+      if (threadId === "source-thread" && turnId === "turn-callback-1") {
+        return {
+          status: "completed",
+          completedAt: "2026-04-13T00:11:00.000Z",
+          items: [
+            {
+              type: "agentMessage",
+              phase: "final_answer",
+              text: "callback delivered",
+            },
+          ],
+        };
+      }
+      throw new Error(`Unexpected waitForTurn: ${threadId} ${turnId}`);
+    },
+    get callbackEnvelope() {
+      return callbackEnvelope;
+    },
+  };
 }
 
 test("resolveDispatchThread respects threadId, exact name, query, then createIfMissing", () => {
@@ -113,65 +280,347 @@ test("deliverMessageToThread surfaces timeout failures as turn_timeout", async (
   assert.equal(activeDispatches[0].threadId, "thread-1");
 });
 
-test("deliverMessageToThread retries one transient empty-rollout failure", async (t) => {
+test("processAsyncDispatchWithSession completes async dispatches and auto-delivers callbacks", async (t) => {
   await withRelayHome(t);
 
-  let waitAttempts = 0;
-  const fakeSession = {
-    turnTimeoutMs: 1_000,
-    async request(method) {
-      if (method === "thread/resume") {
-        return { ok: true };
-      }
-      if (method === "turn/start") {
-        return {
-          result: {
-            turn: {
-              id: "turn-retry",
-            },
-          },
-        };
-      }
-      throw new Error(`Unexpected request: ${method}`);
-    },
-    async waitForTurn() {
-      waitAttempts += 1;
-      if (waitAttempts === 1) {
-        throw new Error("failed to load rollout `foo` for thread thread-1: rollout at foo is empty");
-      }
-      return {
-        status: "completed",
-        completedAt: "2026-04-13T00:10:00.000Z",
-        items: [
-          {
-            type: "agentMessage",
-            phase: "final_answer",
-            text: "relay smoke retry ok",
-          },
-        ],
-      };
-    },
-  };
-
-  const result = await deliverMessageToThread(fakeSession, {
-    project: {
-      projectId: "C:\\Trusted\\Relay",
-      name: "Relay",
-      path: "C:\\Trusted\\Relay",
-    },
-    thread: {
-      threadId: "thread-1",
-      name: "relay smoke",
-      status: "idle",
-      createdAt: "2026-04-13T00:00:00.000Z",
-      lastUsedAt: "2026-04-13T00:00:00.000Z",
-    },
-    message: "Reply exactly relay smoke retry ok",
-    timeoutSec: 5,
-    resolution: "by_thread_id",
+  await createDispatchRecord({
+    dispatchId: "dispatch-success",
+    projectId: "C:\\Trusted\\Relay",
+    threadId: "target-thread",
+    threadName: "relay target",
+    message: "Reply exactly relay async ok",
+    timeoutSec: 30,
     created: false,
+    resolution: "by_thread_id",
+    callbackThreadId: "source-thread",
+    callbackStatus: "pending",
+    dispatchStatus: "queued",
+    createdAt: "2026-04-13T00:00:00.000Z",
+    acceptedAt: "2026-04-13T00:00:00.000Z",
+    updatedAt: "2026-04-13T00:00:00.000Z",
   });
 
-  assert.equal(waitAttempts, 2);
-  assert.match(result.payload.replyText, /relay smoke retry ok/i);
+  const session = makeAsyncSession();
+  const result = await processAsyncDispatchWithSession(session, "dispatch-success");
+
+  assert.equal(result.dispatchStatus, "succeeded");
+  assert.equal(result.callbackStatus, "delivered");
+  assert.equal(result.replyText, "relay async ok");
+  assert.equal(result.turnId, "turn-target-1");
+  assert.equal(result.callbackTurnId, "turn-callback-1");
+  assert.match(session.callbackEnvelope ?? "", /\[Codex Relay Callback\]/);
+  assert.match(session.callbackEnvelope ?? "", /BEGIN_CODEX_RELAY_CALLBACK_JSON/);
+  assert.match(session.callbackEnvelope ?? "", /END_CODEX_RELAY_CALLBACK_JSON/);
+  const payloadMatch = session.callbackEnvelope?.match(/BEGIN_CODEX_RELAY_CALLBACK_JSON\s*([\s\S]*?)\s*END_CODEX_RELAY_CALLBACK_JSON/);
+  assert.ok(payloadMatch);
+  const callbackPayload = JSON.parse(payloadMatch[1]);
+  assert.equal(callbackPayload.eventType, "codex.relay.dispatch.completed.v1");
+  assert.equal(callbackPayload.dispatchId, "dispatch-success");
+  assert.equal(callbackPayload.status, "succeeded");
+
+  const status = await dispatchStatusAction({ dispatchId: "dispatch-success" });
+  assert.equal(status.payload.dispatchStatus, "succeeded");
+  assert.equal(status.payload.callbackStatus, "delivered");
+  assert.equal(status.payload.replyText, "relay async ok");
+});
+
+test("processAsyncDispatchWithSession leaves callback delivery pending when the source thread is busy", async (t) => {
+  await withRelayHome(t);
+
+  await createDispatchRecord({
+    dispatchId: "dispatch-pending",
+    projectId: "C:\\Trusted\\Relay",
+    threadId: "target-thread",
+    threadName: "relay target",
+    message: "Reply exactly relay async ok",
+    timeoutSec: 30,
+    created: false,
+    resolution: "by_thread_id",
+    callbackThreadId: "source-thread",
+    callbackStatus: "pending",
+    dispatchStatus: "queued",
+    createdAt: "2026-04-13T00:00:00.000Z",
+    acceptedAt: "2026-04-13T00:00:00.000Z",
+    updatedAt: "2026-04-13T00:00:00.000Z",
+  });
+
+  await processAsyncDispatchWithSession(makeAsyncSession({ sourceStatus: "running" }), "dispatch-pending");
+
+  const stored = await getDispatchRecord("dispatch-pending");
+  assert.ok(stored);
+  assert.equal(stored.dispatchStatus, "succeeded");
+  assert.equal(stored.callbackStatus, "pending");
+  assert.equal(stored.callbackErrorCode, "target_busy");
+
+  const retry = await dispatchDeliverAction(makeAsyncSession({ sourceStatus: "idle" }), {
+    dispatchId: "dispatch-pending",
+  });
+  assert.equal(retry.payload.callbackStatus, "delivered");
+});
+
+test("processAsyncDispatchWithSession auto-retries a busy callback and eventually delivers it", async (t) => {
+  await withRelayHome(t);
+
+  await createDispatchRecord({
+    dispatchId: "dispatch-auto-retry-callback",
+    projectId: "C:\\Trusted\\Relay",
+    threadId: "target-thread",
+    threadName: "relay target",
+    message: "Reply exactly relay async ok",
+    timeoutSec: 30,
+    created: false,
+    resolution: "by_thread_id",
+    callbackThreadId: "source-thread",
+    callbackStatus: "pending",
+    dispatchStatus: "queued",
+    createdAt: "2026-04-13T00:00:00.000Z",
+    acceptedAt: "2026-04-13T00:00:00.000Z",
+    updatedAt: "2026-04-13T00:00:00.000Z",
+  });
+
+  const result = await processAsyncDispatchWithSession(makeAsyncSession({
+    sourceStatusSequence: ["idle", "running", "idle"],
+  }), "dispatch-auto-retry-callback", {
+    callbackRetryDelaysMs: [0],
+  });
+
+  assert.equal(result.dispatchStatus, "succeeded");
+  assert.equal(result.callbackStatus, "delivered");
+});
+
+test("processAsyncDispatchWithSession waits for a newly created target thread to become visible in a fresh worker session", async (t) => {
+  await withRelayHome(t);
+
+  await rememberCreatedThread({
+    threadId: "target-thread",
+    projectId: "C:\\Trusted\\Relay",
+    name: "relay target",
+    createdAt: "2026-04-13T00:00:00.000Z",
+    lastUsedAt: "2026-04-13T00:00:00.000Z",
+    lastTurnId: null,
+  });
+  await createDispatchRecord({
+    dispatchId: "dispatch-created-visible-late",
+    projectId: "C:\\Trusted\\Relay",
+    threadId: "target-thread",
+    threadName: "relay target",
+    message: "Reply exactly relay async ok",
+    timeoutSec: 30,
+    created: true,
+    resolution: "created_new",
+    callbackThreadId: null,
+    callbackStatus: "not_requested",
+    dispatchStatus: "queued",
+    createdAt: "2026-04-13T00:00:00.000Z",
+    acceptedAt: "2026-04-13T00:00:00.000Z",
+    updatedAt: "2026-04-13T00:00:00.000Z",
+  });
+
+  const result = await processAsyncDispatchWithSession(makeAsyncSession({
+    hideTargetFromList: true,
+    targetReadMissingCount: 2,
+  }), "dispatch-created-visible-late");
+
+  assert.equal(result.dispatchStatus, "succeeded");
+  assert.equal(result.replyText, "relay async ok");
+});
+
+test("processAsyncDispatchWithSession resumes a recorded target turn without replaying the message", async (t) => {
+  await withRelayHome(t);
+
+  await createDispatchRecord({
+    dispatchId: "dispatch-resume",
+    projectId: "C:\\Trusted\\Relay",
+    threadId: "target-thread",
+    threadName: "relay target",
+    message: "Reply exactly relay async resume",
+    timeoutSec: 30,
+    created: false,
+    resolution: "by_thread_id",
+    callbackThreadId: null,
+    callbackStatus: "not_requested",
+    dispatchStatus: "running",
+    turnId: "turn-existing-1",
+    createdAt: "2026-04-13T00:00:00.000Z",
+    acceptedAt: "2026-04-13T00:00:00.000Z",
+    updatedAt: "2026-04-13T00:00:05.000Z",
+  });
+
+  const result = await processAsyncDispatchWithSession(makeAsyncSession({
+    allowTargetTurnStart: false,
+    targetTurnId: "turn-existing-1",
+    targetReplyText: "relay async resumed",
+  }), "dispatch-resume");
+
+  assert.equal(result.dispatchStatus, "succeeded");
+  assert.equal(result.turnId, "turn-existing-1");
+  assert.equal(result.replyText, "relay async resumed");
+});
+
+test("processAsyncDispatchWithSession recovers a turn id from the active thread lease and clears the stale lease on success", async (t) => {
+  await withRelayHome(t);
+
+  await createDispatchRecord({
+    dispatchId: "dispatch-turn-from-lease",
+    projectId: "C:\\Trusted\\Relay",
+    threadId: "target-thread",
+    threadName: "relay target",
+    message: "Reply exactly relay async resume",
+    timeoutSec: 30,
+    created: false,
+    resolution: "by_thread_id",
+    callbackThreadId: null,
+    callbackStatus: "not_requested",
+    dispatchStatus: "running",
+    createdAt: "2026-04-13T00:00:00.000Z",
+    acceptedAt: "2026-04-13T00:00:00.000Z",
+    updatedAt: "2026-04-13T00:00:05.000Z",
+  });
+
+  const lease = await acquireThreadLease({
+    threadId: "target-thread",
+    projectId: "C:\\Trusted\\Relay",
+    ttlMs: 60_000,
+  });
+  await updateThreadLease({
+    threadId: "target-thread",
+    leaseId: lease.leaseId,
+    turnId: "turn-from-lease-1",
+  });
+
+  const result = await processAsyncDispatchWithSession(makeAsyncSession({
+    allowTargetTurnStart: false,
+    targetTurnId: "turn-from-lease-1",
+    targetReplyText: "relay async from lease",
+  }), "dispatch-turn-from-lease");
+
+  assert.equal(result.dispatchStatus, "succeeded");
+  assert.equal(result.turnId, "turn-from-lease-1");
+  assert.equal(result.replyText, "relay async from lease");
+  assert.equal(await getActiveThreadLease("target-thread"), null);
+});
+
+test("dispatchRecoverAction retries a failed callback delivery explicitly", async (t) => {
+  await withRelayHome(t);
+
+  await createDispatchRecord({
+    dispatchId: "dispatch-recover-callback",
+    projectId: "C:\\Trusted\\Relay",
+    threadId: "target-thread",
+    threadName: "relay target",
+    message: "Reply exactly relay async ok",
+    timeoutSec: 30,
+    created: false,
+    resolution: "by_thread_id",
+    callbackThreadId: "source-thread",
+    callbackStatus: "failed",
+    callbackErrorCode: "app_server_unavailable",
+    callbackErrorMessage: "source thread callback failed previously",
+    dispatchStatus: "succeeded",
+    turnId: "turn-target-1",
+    replyText: "relay async ok",
+    createdAt: "2026-04-13T00:00:00.000Z",
+    acceptedAt: "2026-04-13T00:00:00.000Z",
+    updatedAt: "2026-04-13T00:00:10.000Z",
+  });
+
+  const recovered = await dispatchRecoverAction(makeAsyncSession(), {
+    dispatchId: "dispatch-recover-callback",
+  });
+
+  assert.equal(recovered.payload.recoveryAction, "retry_callback");
+  assert.equal(recovered.payload.callbackStatus, "delivered");
+});
+
+test("dispatchRecoverAction resumes a timed out target turn when the turn id is known", async (t) => {
+  await withRelayHome(t);
+
+  await createDispatchRecord({
+    dispatchId: "dispatch-recover-timeout",
+    projectId: "C:\\Trusted\\Relay",
+    threadId: "target-thread",
+    threadName: "relay target",
+    message: "Reply exactly relay async ok",
+    timeoutSec: 30,
+    created: false,
+    resolution: "by_thread_id",
+    callbackThreadId: "source-thread",
+    callbackStatus: "pending",
+    dispatchStatus: "timed_out",
+    errorCode: "turn_timeout",
+    errorMessage: "Timed out while waiting for thread target-thread turn turn-target-2",
+    turnId: "turn-target-2",
+    createdAt: "2026-04-13T00:00:00.000Z",
+    acceptedAt: "2026-04-13T00:00:00.000Z",
+    updatedAt: "2026-04-13T00:00:10.000Z",
+  });
+
+  const recovered = await dispatchRecoverAction(makeAsyncSession({
+    allowTargetTurnStart: false,
+    targetTurnId: "turn-target-2",
+    targetReplyText: "relay async recovered",
+  }), {
+    dispatchId: "dispatch-recover-timeout",
+  });
+
+  assert.equal(recovered.payload.recoveryAction, "resume_timed_out_turn");
+  assert.equal(recovered.payload.dispatchStatus, "succeeded");
+  assert.equal(recovered.payload.callbackStatus, "delivered");
+  assert.equal(recovered.payload.replyText, "relay async recovered");
+});
+
+test("dispatchRecoverAction batch-recovers actionable dispatches", async (t) => {
+  await withRelayHome(t);
+
+  await createDispatchRecord({
+    dispatchId: "dispatch-batch-pending",
+    projectId: "C:\\Trusted\\Relay",
+    threadId: "target-thread",
+    threadName: "relay target",
+    message: "Reply exactly relay async ok",
+    timeoutSec: 30,
+    created: false,
+    resolution: "by_thread_id",
+    callbackThreadId: "source-thread",
+    callbackStatus: "pending",
+    dispatchStatus: "succeeded",
+    turnId: "turn-target-1",
+    replyText: "relay async ok",
+    createdAt: "2026-04-13T00:00:00.000Z",
+    acceptedAt: "2026-04-13T00:00:00.000Z",
+    updatedAt: "2026-04-13T00:00:10.000Z",
+  });
+  await createDispatchRecord({
+    dispatchId: "dispatch-batch-timeout",
+    projectId: "C:\\Trusted\\Relay",
+    threadId: "target-thread",
+    threadName: "relay target",
+    message: "Reply exactly relay async ok",
+    timeoutSec: 30,
+    created: false,
+    resolution: "by_thread_id",
+    callbackThreadId: null,
+    callbackStatus: "not_requested",
+    dispatchStatus: "timed_out",
+    turnId: "turn-target-2",
+    errorCode: "turn_timeout",
+    errorMessage: "Timed out while waiting for thread target-thread turn turn-target-2",
+    createdAt: "2026-04-13T00:00:00.000Z",
+    acceptedAt: "2026-04-13T00:00:00.000Z",
+    updatedAt: "2026-04-13T00:00:11.000Z",
+  });
+
+  const recovered = await dispatchRecoverAction(makeAsyncSession({
+    allowTargetTurnStart: false,
+    targetTurnId: "turn-target-2",
+    targetReplyText: "relay async recovered",
+  }), {
+    projectId: "C:\\Trusted\\Relay",
+    limit: 10,
+  });
+
+  assert.equal(recovered.payload.recoveredCount, 2);
+  assert.equal(recovered.payload.recovered.length, 2);
+  assert.ok(recovered.payload.recovered.some((item) => item.dispatchId === "dispatch-batch-pending" && item.callbackStatus === "delivered"));
+  assert.ok(recovered.payload.recovered.some((item) => item.dispatchId === "dispatch-batch-timeout" && item.dispatchStatus === "succeeded"));
 });

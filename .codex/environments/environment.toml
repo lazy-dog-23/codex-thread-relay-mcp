@@ -1,0 +1,24 @@
+# Generated repo environment for Codex app.
+version = 1
+name = "codex-autonomy"
+
+[setup]
+script = "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/setup.windows.ps1"
+
+[[actions]]
+name = "verify"
+icon = "check"
+command = "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1"
+platform = "windows"
+
+[[actions]]
+name = "smoke"
+icon = "play"
+command = "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/smoke.ps1"
+platform = "windows"
+
+[[actions]]
+name = "review"
+icon = "eye"
+command = "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/review.ps1"
+platform = "windows"

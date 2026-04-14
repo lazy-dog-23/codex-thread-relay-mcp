@@ -3,6 +3,8 @@ import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 const RELAY_TO_MCP_CODE = {
   project_untrusted: ErrorCode.InvalidParams,
   thread_not_found: ErrorCode.InvalidParams,
+  dispatch_not_found: ErrorCode.InvalidParams,
+  callback_target_invalid: ErrorCode.InvalidParams,
   target_ambiguous: ErrorCode.InvalidParams,
   target_busy: ErrorCode.InvalidRequest,
   app_server_unavailable: ErrorCode.InternalError,

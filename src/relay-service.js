@@ -1,3 +1,7 @@
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
+
 import { buildEnvelope, epochishToIso, extractTurnReply, isSuccessfulTurn, normalizeTimeoutSeconds } from "./app-server-client.js";
 import { normalizeRelayError, relayError } from "./errors.js";
 import {
@@ -8,15 +12,32 @@ import {
   requireTrustedProject,
 } from "./project-registry.js";
 import {
+  acquireDispatchLease,
   acquireThreadLease,
+  createDispatchRecord,
   forgetCreatedThread,
+  getActiveDispatchLease,
+  getActiveThreadLease,
+  getDispatchRecord,
+  listDispatchRecords,
   listRememberedThreads,
   relayStatePath,
+  releaseDispatchLease,
   releaseThreadLease,
   rememberCreatedThread,
+  updateDispatchRecord,
+  updateThreadLease,
 } from "./state-store.js";
 
 const DEFAULT_DISPATCH_NAME_PREFIX = "relay dispatch";
+const DEFAULT_CALLBACK_TIMEOUT_SEC = 90;
+const DISPATCH_WORKER_LEASE_MS = 15 * 60 * 1_000;
+const DEFAULT_RECOVER_BATCH_LIMIT = 20;
+const CALLBACK_EVENT_PREFIX = "[Codex Relay Callback]";
+const CALLBACK_EVENT_TYPE = "codex.relay.dispatch.completed.v1";
+const CALLBACK_EVENT_JSON_START = "BEGIN_CODEX_RELAY_CALLBACK_JSON";
+const CALLBACK_EVENT_JSON_END = "END_CODEX_RELAY_CALLBACK_JSON";
+const CALLBACK_PENDING_RETRY_DELAYS_MS = [3_000, 7_000, 15_000];
 
 function isTransientRolloutLoadFailure(error) {
   const message = error instanceof Error ? error.message : String(error);
@@ -69,6 +90,78 @@ function formatTurnResultText(payload) {
     `Received reply from thread ${payload.threadId} (${payload.resolution}).`,
     payload.replyText,
   ].join("\n");
+}
+
+function formatAsyncDispatchAcceptedText(payload) {
+  return [
+    `Accepted async relay dispatch ${payload.dispatchId}.`,
+    `Target thread: ${payload.threadName} [${payload.threadId}] (${payload.resolution}).`,
+    `Callback requested: ${payload.callbackRequested ? "yes" : "no"}.`,
+    `Relay state: ${payload.statePath}`,
+  ].join("\n");
+}
+
+function formatDispatchStatusText(payload) {
+  return [
+    `Dispatch ${payload.dispatchId}: ${payload.dispatchStatus}.`,
+    `Callback: ${payload.callbackStatus}.`,
+    `Target thread: ${payload.threadName} [${payload.threadId}].`,
+    payload.recoverySuggested ? `Recovery: ${payload.recoverySuggested}.` : null,
+    payload.replyText ? `Reply: ${payload.replyText}` : null,
+    payload.errorCode ? `Error: [${payload.errorCode}] ${payload.errorMessage}` : null,
+    payload.warning ? `Warning: ${payload.warning}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function formatDeliverStatusText(payload) {
+  return [
+    `Dispatch ${payload.dispatchId} callback status: ${payload.callbackStatus}.`,
+    payload.callbackThreadId ? `Callback thread: ${payload.callbackThreadId}.` : "Callback thread: not requested.",
+    payload.replyText ? `Reply: ${payload.replyText}` : null,
+    payload.errorCode ? `Dispatch error: [${payload.errorCode}] ${payload.errorMessage}` : null,
+    payload.callbackErrorCode ? `Callback error: [${payload.callbackErrorCode}] ${payload.callbackErrorMessage}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function formatRecoverStatusText(payload) {
+  return [
+    `Dispatch ${payload.dispatchId} recovery action: ${payload.recoveryAction ?? "none"}.`,
+    `Dispatch status: ${payload.dispatchStatus}.`,
+    `Callback: ${payload.callbackStatus}.`,
+    payload.replyText ? `Reply: ${payload.replyText}` : null,
+    payload.errorCode ? `Error: [${payload.errorCode}] ${payload.errorMessage}` : null,
+    payload.callbackErrorCode ? `Callback error: [${payload.callbackErrorCode}] ${payload.callbackErrorMessage}` : null,
+    payload.warning ? `Warning: ${payload.warning}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function formatRecoverBatchText(payload) {
+  if (!Array.isArray(payload.recovered) || payload.recovered.length === 0) {
+    return [
+      `Recovered 0 dispatch(es) from ${payload.scannedCount} scanned.`,
+      payload.projectId ? `Project: ${payload.projectId}` : null,
+      `Relay state: ${payload.statePath}`,
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  return [
+    `Recovered ${payload.recovered.length} dispatch(es) from ${payload.scannedCount} scanned.`,
+    payload.projectId ? `Project: ${payload.projectId}` : null,
+    ...payload.recovered.map((item) =>
+      `- ${item.dispatchId}: ${item.recoveryAction ?? "none"} -> ${item.dispatchStatus} / ${item.callbackStatus}`,
+    ),
+    `Relay state: ${payload.statePath}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function requireTrustedProjectSafe(projects, projectId) {
@@ -158,6 +251,279 @@ function mergeThreadLists(primaryThreads, rememberedThreads, rememberedRecords) 
   }
 
   return [...merged.values()].sort((left, right) => threadSortKey(right).localeCompare(threadSortKey(left)));
+}
+
+async function inspectDispatchRuntime(record) {
+  const [dispatchLease, threadLease] = await Promise.all([
+    getActiveDispatchLease(record.dispatchId),
+    getActiveThreadLease(record.threadId),
+  ]);
+  const dispatchLeaseActive = Boolean(dispatchLease);
+  const threadLeaseActive = Boolean(threadLease);
+  const threadLeaseTurnId = threadLease?.turnId ?? null;
+  const effectiveTurnId = record.turnId ?? threadLeaseTurnId;
+  let recoverySuggested = null;
+  let warning = null;
+
+  if ((record.dispatchStatus === "queued" || record.dispatchStatus === "running") && dispatchLeaseActive) {
+    recoverySuggested = "wait_worker";
+    warning = "A relay worker is still active for this dispatch.";
+  } else if ((record.dispatchStatus === "queued" || record.dispatchStatus === "running") && effectiveTurnId) {
+    recoverySuggested = "resume_turn_wait";
+    warning = record.turnId
+      ? "An existing target turn id is recorded and can be resumed without replaying the message."
+      : "The target turn id was recovered from the active thread lease and can be resumed without replaying the message.";
+  } else if ((record.dispatchStatus === "queued" || record.dispatchStatus === "running") && threadLeaseActive) {
+    recoverySuggested = "wait_thread_lease_expiry";
+    warning = "The target thread still has an active lease but no recorded turn id, so replay is not safe yet.";
+  } else if (record.dispatchStatus === "queued" || record.dispatchStatus === "running") {
+    recoverySuggested = "restart_dispatch";
+    warning = "No active worker or thread lease remains; the dispatch can be restarted safely.";
+  } else if (record.dispatchStatus === "timed_out" && effectiveTurnId && !dispatchLeaseActive) {
+    recoverySuggested = "resume_timed_out_turn";
+    warning = record.turnId
+      ? "The target turn timed out locally but still has a recorded turn id that can be resumed."
+      : "The target turn timed out locally and its turn id was recovered from the active thread lease.";
+  } else if (record.callbackThreadId && record.callbackStatus === "pending") {
+    recoverySuggested = "deliver_callback";
+    warning = "Callback delivery is pending and can be retried.";
+  } else if (record.callbackThreadId && record.callbackStatus === "failed") {
+    recoverySuggested = "retry_callback";
+    warning = "Callback delivery failed and can be retried explicitly.";
+  }
+
+  return {
+    dispatchLeaseActive,
+    threadLeaseActive,
+    threadLeaseTurnId,
+    effectiveTurnId,
+    recoverySuggested,
+    warning,
+  };
+}
+
+function buildDispatchStatusPayload(record, runtime = {}) {
+  return {
+    dispatchId: record.dispatchId,
+    dispatchStatus: record.dispatchStatus,
+    callbackStatus: record.callbackStatus,
+    callbackThreadId: record.callbackThreadId,
+    threadId: record.threadId,
+    threadName: record.threadName,
+    projectId: record.projectId,
+    created: record.created,
+    resolution: record.resolution,
+    turnId: runtime.effectiveTurnId ?? record.turnId,
+    recordedTurnId: record.turnId ?? undefined,
+    threadLeaseTurnId: runtime.threadLeaseTurnId ?? undefined,
+    replyText: record.replyText ?? undefined,
+    errorCode: record.errorCode ?? undefined,
+    errorMessage: record.errorMessage ?? undefined,
+    callbackErrorCode: record.callbackErrorCode ?? undefined,
+    callbackErrorMessage: record.callbackErrorMessage ?? undefined,
+    timingMs: record.timingMs ?? undefined,
+    acceptedAt: record.acceptedAt,
+    updatedAt: record.updatedAt,
+    dispatchLeaseActive: runtime.dispatchLeaseActive ?? false,
+    threadLeaseActive: runtime.threadLeaseActive ?? false,
+    recoverySuggested: runtime.recoverySuggested ?? undefined,
+    warning: runtime.warning ?? undefined,
+    statePath: relayStatePath(),
+  };
+}
+
+function buildCallbackEventPayload(record) {
+  return {
+    eventType: CALLBACK_EVENT_TYPE,
+    dispatchId: record.dispatchId,
+    status: record.dispatchStatus,
+    callbackStatus: record.callbackStatus,
+    callbackThreadId: record.callbackThreadId,
+    targetProjectId: record.projectId,
+    targetThreadId: record.threadId,
+    targetThreadName: record.threadName,
+    turnId: record.turnId,
+    resolution: record.resolution,
+    replyText: record.replyText,
+    errorCode: record.errorCode,
+    errorMessage: record.errorMessage,
+    timingMs: record.timingMs,
+  };
+}
+
+function buildCallbackMessage(record) {
+  const payload = buildCallbackEventPayload(record);
+  const payloadText = JSON.stringify(payload, null, 2);
+  return [
+    CALLBACK_EVENT_PREFIX,
+    `Event-Type: ${CALLBACK_EVENT_TYPE}`,
+    "This is an async relay completion event delivered back to the operator thread.",
+    "Treat it as status/report delivery only, not as a new autonomy goal, proposal, or sprint continuation request.",
+    "Do not change report_thread_id or create new goals because of this event alone.",
+    "",
+    "Machine payload:",
+    CALLBACK_EVENT_JSON_START,
+    payloadText,
+    CALLBACK_EVENT_JSON_END,
+    "",
+    "Operator task:",
+    "- Summarize the dispatch result in this thread.",
+    "- If status is succeeded, use replyText as the delegated result.",
+    "- If status is failed or timed_out, report the concrete error and stop.",
+  ].join("\n");
+}
+
+function callbackTimeoutSeconds(record, session) {
+  const sessionDefault = Math.ceil(session.turnTimeoutMs / 1000);
+  const desired = record?.timeoutSec ?? sessionDefault;
+  return Math.max(15, Math.min(DEFAULT_CALLBACK_TIMEOUT_SEC, desired));
+}
+
+function workerScriptPath() {
+  return fileURLToPath(new URL("./relay-async-worker.js", import.meta.url));
+}
+
+function scheduleAsyncDispatchWorker(dispatchId) {
+  const child = spawn(
+    process.execPath,
+    [workerScriptPath(), dispatchId],
+    {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+      env: {
+        ...process.env,
+      },
+    },
+  );
+  child.unref();
+}
+
+function isTerminalDispatchStatus(status) {
+  return ["succeeded", "failed", "timed_out"].includes(status);
+}
+
+function normalizeDispatchTerminalError(error) {
+  const normalized = normalizeRelayError(error);
+  const dispatchStatus = normalized.relayCode === "turn_timeout" ? "timed_out" : "failed";
+  return {
+    dispatchStatus,
+    errorCode: normalized.relayCode,
+    errorMessage: normalized.message,
+    details: normalized.details ?? {},
+  };
+}
+
+async function rememberThreadTurnResult(project, thread, turnId, completedAt) {
+  await rememberCreatedThread({
+    threadId: thread.threadId,
+    name: thread.name,
+    projectId: project.projectId,
+    createdAt: thread.createdAt ?? completedAt,
+    lastUsedAt: completedAt,
+    lastTurnId: turnId,
+  });
+}
+
+function buildTurnResultPayload(project, thread, resolution, created, turnId, replyText, startedAt, completedAt, warning) {
+  return {
+    projectId: project.projectId,
+    projectName: project.name,
+    threadId: thread.threadId,
+    threadName: thread.name,
+    created,
+    resolution,
+    turnId,
+    replyText,
+    timingMs: Date.now() - startedAt,
+    lastUsedAt: completedAt,
+    statePath: relayStatePath(),
+    warning,
+  };
+}
+
+async function waitForRecordedTurnResult(session, options) {
+  const {
+    project,
+    thread,
+    turnId,
+    timeoutSec,
+    resolution,
+    created,
+    warning = null,
+    startedAt = Date.now(),
+  } = options;
+  const timeoutSeconds = normalizeTimeoutSeconds(timeoutSec, Math.ceil(session.turnTimeoutMs / 1000));
+  const finalTurn = await waitForTurnWithRetry(
+    session,
+    thread.threadId,
+    turnId,
+    timeoutSeconds * 1_000,
+  );
+  if (!isSuccessfulTurn(finalTurn)) {
+    const status = typeof finalTurn?.status === "string" ? finalTurn.status : finalTurn?.status?.type;
+    const detail = finalTurn?.error?.message || status || "unknown";
+    throw relayError("target_turn_failed", `Target turn failed: ${detail}`, {
+      threadId: thread.threadId,
+      turnId,
+      detail,
+    });
+  }
+
+  const replyText = extractTurnReply(finalTurn);
+  if (!replyText) {
+    throw relayError("reply_missing", "Target thread completed but returned no final text.", {
+      threadId: thread.threadId,
+      turnId,
+    });
+  }
+
+  const completedAt = epochishToIso(finalTurn?.completedAt) || new Date().toISOString();
+  await rememberThreadTurnResult(project, thread, turnId, completedAt);
+  const payload = buildTurnResultPayload(
+    project,
+    thread,
+    resolution,
+    created,
+    turnId,
+    replyText,
+    startedAt,
+    completedAt,
+    warning,
+  );
+
+  return {
+    text: formatTurnResultText(payload),
+    payload,
+  };
+}
+
+async function syncDispatchTurnIdFromLease(record, runtime = null) {
+  if (record.turnId) {
+    return record;
+  }
+
+  const activeRuntime = runtime ?? await inspectDispatchRuntime(record);
+  if (!activeRuntime.threadLeaseTurnId) {
+    return record;
+  }
+
+  return updateDispatchRecord(record.dispatchId, (current) => ({
+    ...current,
+    turnId: activeRuntime.threadLeaseTurnId,
+    dispatchStatus: current.dispatchStatus === "queued" ? "running" : current.dispatchStatus,
+    updatedAt: new Date().toISOString(),
+  })) ?? record;
+}
+
+function isActionableRecovery(runtime) {
+  return [
+    "resume_turn_wait",
+    "restart_dispatch",
+    "resume_timed_out_turn",
+    "deliver_callback",
+    "retry_callback",
+  ].includes(runtime?.recoverySuggested ?? "");
 }
 
 async function getTrustedProjectsFromSession(session) {
@@ -306,6 +672,22 @@ async function resolveThreadTarget(session, projects, threadId) {
   }
 }
 
+async function resolveCallbackThreadTarget(session, callbackThreadId) {
+  const projects = await getTrustedProjectsFromSession(session);
+  try {
+    return await resolveThreadTarget(session, projects, callbackThreadId);
+  } catch (error) {
+    const normalized = normalizeRelayError(error);
+    if (normalized.relayCode === "thread_not_found" || normalized.relayCode === "project_untrusted") {
+      throw relayError("callback_target_invalid", `Callback thread could not be resolved: ${callbackThreadId}`, {
+        callbackThreadId,
+        cause: normalized.message,
+      });
+    }
+    throw normalized;
+  }
+}
+
 export function resolveDispatchThread(threads, selectors) {
   const threadId = selectors?.threadId?.trim();
   const threadName = selectors?.threadName?.trim();
@@ -410,10 +792,12 @@ async function waitForTurnWithRetry(session, threadId, turnId, timeoutMs) {
   throw lastError;
 }
 
-async function waitForThreadVisibility(session, threadId) {
+async function waitForThreadVisibility(session, threadId, options = {}) {
+  const attemptsLimit = Math.max(1, options.attempts ?? 4);
+  const baseDelayMs = Math.max(100, options.baseDelayMs ?? 250);
   let attempt = 0;
 
-  while (attempt < 4) {
+  while (attempt < attemptsLimit) {
     try {
       const read = await session.request("thread/read", {
         threadId,
@@ -431,10 +815,59 @@ async function waitForThreadVisibility(session, threadId) {
     }
 
     attempt += 1;
-    await sleep(250 * attempt);
+    await sleep(baseDelayMs * attempt);
   }
 
   return null;
+}
+
+async function resolveDispatchTarget(session, {
+  projectId,
+  threadId,
+  threadName,
+  query,
+  createIfMissing = false,
+}) {
+  const projects = await getTrustedProjectsFromSession(session);
+  const project = requireTrustedProjectSafe(projects, projectId);
+  const threads = await listProjectThreads(session, project);
+  const selected = resolveDispatchThread(threads, {
+    threadId,
+    threadName,
+    query,
+    createIfMissing,
+  });
+
+  let targetThread = selected.thread;
+  let warning = null;
+  if (selected.created) {
+    const created = await createThreadAction(session, {
+      projectId: project.projectId,
+      name: makeDispatchThreadName(threadName),
+    });
+    warning = created.payload.warning ?? null;
+    const visibleThread = await waitForThreadVisibility(session, created.payload.threadId);
+    targetThread = {
+      threadId: created.payload.threadId,
+      name: visibleThread?.name || created.payload.threadName,
+      status: visibleThread?.status?.type || "idle",
+      lastActivityAt: created.payload.lastUsedAt,
+      projectId: project.projectId,
+      cwd: project.path,
+      remembered: true,
+      createdAt: created.payload.createdAt,
+      lastUsedAt: created.payload.lastUsedAt,
+      lastTurnId: created.payload.lastTurnId,
+    };
+  }
+
+  return {
+    project,
+    targetThread,
+    resolution: selected.resolution,
+    created: selected.created,
+    warning,
+  };
 }
 
 export async function deliverMessageToThread(session, options) {
@@ -446,6 +879,7 @@ export async function deliverMessageToThread(session, options) {
     resolution,
     created,
     warning = null,
+    onTurnStarted = null,
   } = options;
 
   if (isTargetBusy(thread)) {
@@ -464,6 +898,7 @@ export async function deliverMessageToThread(session, options) {
     ttlMs: timeoutSeconds * 1_000 + 60_000,
   });
   let releaseLeaseOnExit = true;
+  let turnId = null;
 
   try {
     await session.request("thread/resume", { threadId: thread.threadId });
@@ -482,70 +917,43 @@ export async function deliverMessageToThread(session, options) {
       session.turnTimeoutMs,
     );
 
-    const turnId = started?.result?.turn?.id;
+    turnId = started?.result?.turn?.id;
     if (!turnId) {
       throw relayError("target_turn_failed", "turn/start did not return a turn id.", {
         threadId: thread.threadId,
       });
     }
 
-    const finalTurn = await waitForTurnWithRetry(
-      session,
-      thread.threadId,
-      turnId,
-      timeoutSeconds * 1_000,
-    );
-    if (!isSuccessfulTurn(finalTurn)) {
-      const status = typeof finalTurn?.status === "string" ? finalTurn.status : finalTurn?.status?.type;
-      const detail = finalTurn?.error?.message || status || "unknown";
-      throw relayError("target_turn_failed", `Target turn failed: ${detail}`, {
-        threadId: thread.threadId,
-        turnId,
-        detail,
-      });
-    }
-
-    const replyText = extractTurnReply(finalTurn);
-    if (!replyText) {
-      throw relayError("reply_missing", "Target thread completed but returned no final text.", {
-        threadId: thread.threadId,
-        turnId,
-      });
-    }
-
-    const completedAt = epochishToIso(finalTurn?.completedAt) || new Date().toISOString();
-    await rememberCreatedThread({
+    await updateThreadLease({
       threadId: thread.threadId,
-      name: thread.name,
-      projectId: project.projectId,
-      createdAt: thread.createdAt ?? completedAt,
-      lastUsedAt: completedAt,
-      lastTurnId: turnId,
+      leaseId: lease.leaseId,
+      turnId,
+      status: "running",
     });
 
-    const payload = {
-      projectId: project.projectId,
-      projectName: project.name,
-      threadId: thread.threadId,
-      threadName: thread.name,
-      created,
-      resolution,
-      turnId,
-      replyText,
-      timingMs: Date.now() - startedAt,
-      lastUsedAt: completedAt,
-      statePath: relayStatePath(),
-      warning,
-    };
+    if (typeof onTurnStarted === "function") {
+      await onTurnStarted({ turnId });
+    }
 
-    return {
-      text: formatTurnResultText(payload),
-      payload,
-    };
+    return await waitForRecordedTurnResult(session, {
+      project,
+      thread,
+      turnId,
+      timeoutSec: timeoutSeconds,
+      resolution,
+      created,
+      warning,
+      startedAt,
+    });
   } catch (error) {
     const normalized = normalizeRelayError(error);
     if (normalized.relayCode === "turn_timeout") {
       releaseLeaseOnExit = false;
+      normalized.details = {
+        ...normalized.details,
+        threadId: thread.threadId,
+        turnId,
+      };
     }
     throw normalized;
   } finally {
@@ -555,6 +963,340 @@ export async function deliverMessageToThread(session, options) {
         leaseId: lease.leaseId,
       });
     }
+  }
+}
+
+async function tryDeliverCallback(session, record, callbackThreadId = record.callbackThreadId, options = {}) {
+  const normalizedCallbackThreadId = typeof callbackThreadId === "string" && callbackThreadId.trim().length > 0
+    ? callbackThreadId.trim()
+    : null;
+
+  if (!normalizedCallbackThreadId) {
+    const updated = await updateDispatchRecord(record.dispatchId, (current) => ({
+      ...current,
+      callbackThreadId: null,
+      callbackStatus: "not_requested",
+      callbackTurnId: null,
+      callbackErrorCode: null,
+      callbackErrorMessage: null,
+      updatedAt: new Date().toISOString(),
+    }));
+    return { record: updated ?? record, delivered: false };
+  }
+
+  let callbackTarget;
+  try {
+    callbackTarget = await resolveCallbackThreadTarget(session, normalizedCallbackThreadId);
+  } catch (error) {
+    const normalized = normalizeRelayError(error);
+    if (options.throwOnInvalidTarget === true) {
+      throw normalized;
+    }
+
+    const updated = await updateDispatchRecord(record.dispatchId, (current) => ({
+      ...current,
+      callbackThreadId: normalizedCallbackThreadId,
+      callbackStatus: "failed",
+      callbackTurnId: null,
+      callbackErrorCode: normalized.relayCode,
+      callbackErrorMessage: normalized.message,
+      updatedAt: new Date().toISOString(),
+    }));
+    return {
+      record: updated ?? record,
+      delivered: false,
+      error: normalized,
+    };
+  }
+
+  try {
+    const delivered = await deliverMessageToThread(session, {
+      project: callbackTarget.project,
+      thread: callbackTarget.thread,
+      message: buildCallbackMessage({
+        ...record,
+        callbackThreadId: normalizedCallbackThreadId,
+      }),
+      timeoutSec: callbackTimeoutSeconds(record, session),
+      resolution: "by_thread_id",
+      created: false,
+    });
+
+    const updated = await updateDispatchRecord(record.dispatchId, (current) => ({
+      ...current,
+      callbackThreadId: normalizedCallbackThreadId,
+      callbackStatus: "delivered",
+      callbackTurnId: delivered.payload.turnId,
+      callbackErrorCode: null,
+      callbackErrorMessage: null,
+      callbackDeliveredAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }));
+    return { record: updated ?? record, delivered: true, result: delivered };
+  } catch (error) {
+    const normalized = normalizeRelayError(error);
+    const callbackStatus = normalized.relayCode === "target_busy" ? "pending" : "failed";
+    const updated = await updateDispatchRecord(record.dispatchId, (current) => ({
+      ...current,
+      callbackThreadId: normalizedCallbackThreadId,
+      callbackStatus,
+      callbackTurnId: null,
+      callbackErrorCode: normalized.relayCode,
+      callbackErrorMessage: normalized.message,
+      updatedAt: new Date().toISOString(),
+    }));
+    return {
+      record: updated ?? record,
+      delivered: false,
+      error: normalized,
+    };
+  }
+}
+
+async function retryPendingCallbackDelivery(session, record, delaysMs = CALLBACK_PENDING_RETRY_DELAYS_MS) {
+  let currentRecord = record;
+
+  for (const delayMs of delaysMs) {
+    if (currentRecord.callbackStatus !== "pending") {
+      break;
+    }
+
+    await sleep(delayMs);
+    const attempt = await tryDeliverCallback(session, currentRecord);
+    currentRecord = attempt.record;
+  }
+
+  return currentRecord;
+}
+
+async function executeDispatchTurn(session, dispatchId, record) {
+  const projects = await getTrustedProjectsFromSession(session);
+  const resolvedTarget = await resolveThreadTarget(session, projects, record.threadId);
+  const visibleCreatedThread = record.created
+    ? await waitForThreadVisibility(session, resolvedTarget.thread.threadId, {
+      attempts: 8,
+      baseDelayMs: 500,
+    })
+    : null;
+  const target = visibleCreatedThread?.id
+    ? {
+      ...resolvedTarget,
+      thread: {
+        ...resolvedTarget.thread,
+        threadId: visibleCreatedThread.id,
+        name: visibleCreatedThread.name || resolvedTarget.thread.name,
+        status: visibleCreatedThread?.status?.type || resolvedTarget.thread.status,
+      },
+    }
+    : resolvedTarget;
+  if (record.turnId) {
+    const startedAt = Date.parse(record.acceptedAt ?? record.updatedAt ?? "") || Date.now();
+    const matchingLease = await getActiveThreadLease(target.thread.threadId);
+    return {
+      target,
+      result: await (async () => {
+        try {
+          const resumedResult = await waitForRecordedTurnResult(session, {
+            project: target.project,
+            thread: target.thread,
+            turnId: record.turnId,
+            timeoutSec: record.timeoutSec,
+            resolution: record.resolution,
+            created: record.created,
+            warning: record.warning ?? null,
+            startedAt,
+          });
+          if (matchingLease?.turnId === record.turnId) {
+            await releaseThreadLease({
+              threadId: target.thread.threadId,
+              leaseId: matchingLease.leaseId,
+            });
+          }
+          return resumedResult;
+        } catch (error) {
+          const normalized = normalizeRelayError(error);
+          if (matchingLease?.turnId === record.turnId && normalized.relayCode !== "turn_timeout") {
+            await releaseThreadLease({
+              threadId: target.thread.threadId,
+              leaseId: matchingLease.leaseId,
+            });
+          }
+          throw normalized;
+        }
+      })(),
+    };
+  }
+
+  return {
+    target,
+    result: await (async () => {
+      try {
+        return await deliverMessageToThread(session, {
+          project: target.project,
+          thread: target.thread,
+          message: record.message,
+          timeoutSec: record.timeoutSec,
+          resolution: record.resolution,
+          created: record.created,
+          warning: record.warning ?? null,
+          onTurnStarted: async ({ turnId }) => {
+            await updateDispatchRecord(dispatchId, (current) => ({
+              ...current,
+              projectId: target.project.projectId,
+              threadId: target.thread.threadId,
+              threadName: target.thread.name,
+              turnId,
+              dispatchStatus: "running",
+              updatedAt: new Date().toISOString(),
+            }));
+          },
+        });
+      } catch (error) {
+        const normalized = normalizeRelayError(error);
+        if (!record.created || normalized.relayCode !== "thread_not_found") {
+          throw normalized;
+        }
+
+        const retriedVisibleThread = await waitForThreadVisibility(session, target.thread.threadId, {
+          attempts: 8,
+          baseDelayMs: 500,
+        });
+        if (!retriedVisibleThread?.id) {
+          throw normalized;
+        }
+
+        return deliverMessageToThread(session, {
+          project: target.project,
+          thread: {
+            ...target.thread,
+            threadId: retriedVisibleThread.id,
+            name: retriedVisibleThread.name || target.thread.name,
+            status: retriedVisibleThread?.status?.type || target.thread.status,
+          },
+          message: record.message,
+          timeoutSec: record.timeoutSec,
+          resolution: record.resolution,
+          created: record.created,
+          warning: record.warning ?? null,
+          onTurnStarted: async ({ turnId }) => {
+            await updateDispatchRecord(dispatchId, (current) => ({
+              ...current,
+              projectId: target.project.projectId,
+              threadId: target.thread.threadId,
+              threadName: target.thread.name,
+              turnId,
+              dispatchStatus: "running",
+              updatedAt: new Date().toISOString(),
+            }));
+          },
+        });
+      }
+    })(),
+  };
+}
+
+async function completeDispatchRecord(session, dispatchId, activeRecord, options = {}) {
+  const allowTimedOutTurnRecovery = options.allowTimedOutTurnRecovery === true;
+  const allowFailedCallbackRetry = options.allowFailedCallbackRetry === true;
+  const callbackRetryDelaysMs = Array.isArray(options.callbackRetryDelaysMs)
+    ? options.callbackRetryDelaysMs
+    : CALLBACK_PENDING_RETRY_DELAYS_MS;
+
+  let terminalRecord = activeRecord;
+  const shouldRunTargetTurn = !isTerminalDispatchStatus(activeRecord.dispatchStatus)
+    || (allowTimedOutTurnRecovery && activeRecord.dispatchStatus === "timed_out" && activeRecord.turnId);
+
+  if (shouldRunTargetTurn) {
+    try {
+      const { target, result } = await executeDispatchTurn(session, dispatchId, activeRecord);
+      terminalRecord = await updateDispatchRecord(dispatchId, (current) => ({
+        ...current,
+        projectId: target.project.projectId,
+        threadId: target.thread.threadId,
+        threadName: target.thread.name,
+        turnId: result.payload.turnId,
+        dispatchStatus: "succeeded",
+        replyText: result.payload.replyText,
+        errorCode: null,
+        errorMessage: null,
+        timingMs: result.payload.timingMs,
+        warning: result.payload.warning ?? null,
+        updatedAt: new Date().toISOString(),
+      })) ?? activeRecord;
+    } catch (error) {
+      const terminalError = normalizeDispatchTerminalError(error);
+      terminalRecord = await updateDispatchRecord(dispatchId, (current) => ({
+        ...current,
+        dispatchStatus: terminalError.dispatchStatus,
+        errorCode: terminalError.errorCode,
+        errorMessage: terminalError.errorMessage,
+        turnId: terminalError.details.turnId ?? current.turnId ?? null,
+        updatedAt: new Date().toISOString(),
+      })) ?? activeRecord;
+    }
+  }
+
+  if (!terminalRecord.callbackThreadId) {
+    return updateDispatchRecord(dispatchId, (current) => ({
+      ...current,
+      callbackStatus: "not_requested",
+      updatedAt: new Date().toISOString(),
+    })) ?? terminalRecord;
+  }
+
+  const shouldRetryCallback = terminalRecord.callbackStatus === "pending"
+    || (allowFailedCallbackRetry && terminalRecord.callbackStatus === "failed")
+    || terminalRecord.callbackStatus === "not_requested";
+  if (!shouldRetryCallback) {
+    return terminalRecord;
+  }
+
+  const callbackAttempt = await tryDeliverCallback(session, terminalRecord);
+  if (callbackAttempt.record.callbackStatus === "pending") {
+    return retryPendingCallbackDelivery(session, callbackAttempt.record, callbackRetryDelaysMs);
+  }
+  return callbackAttempt.record;
+}
+
+export async function processAsyncDispatchWithSession(session, dispatchId, options = {}) {
+  const storedRecord = await getDispatchRecord(dispatchId);
+  if (!storedRecord) {
+    throw relayError("dispatch_not_found", `Dispatch not found: ${dispatchId}`, {
+      dispatchId,
+    });
+  }
+  const record = await syncDispatchTurnIdFromLease(storedRecord);
+
+  const allowTimedOutTurnRecovery = options.allowTimedOutTurnRecovery === true;
+  const allowFailedCallbackRetry = options.allowFailedCallbackRetry === true;
+  const callbackRecoverable = record.callbackStatus === "pending"
+    || (allowFailedCallbackRetry && record.callbackStatus === "failed");
+  const timedOutRecoverable = allowTimedOutTurnRecovery && record.dispatchStatus === "timed_out" && record.turnId;
+  if (isTerminalDispatchStatus(record.dispatchStatus) && !callbackRecoverable && !timedOutRecoverable) {
+    return record;
+  }
+
+  const lease = await acquireDispatchLease({
+    dispatchId,
+    ttlMs: DISPATCH_WORKER_LEASE_MS,
+  });
+
+  try {
+    const runningRecord = await updateDispatchRecord(dispatchId, (current) => ({
+      ...current,
+      dispatchStatus: isTerminalDispatchStatus(current.dispatchStatus) ? current.dispatchStatus : "running",
+      updatedAt: new Date().toISOString(),
+    }));
+    const activeRecord = runningRecord ?? record;
+    return await completeDispatchRecord(session, dispatchId, activeRecord, {
+      allowTimedOutTurnRecovery,
+      allowFailedCallbackRetry,
+    });
+  } finally {
+    await releaseDispatchLease({
+      dispatchId,
+      leaseId: lease.leaseId,
+    });
   }
 }
 
@@ -660,46 +1402,268 @@ export async function dispatchAction(session, {
   createIfMissing = false,
   timeoutSec,
 }) {
-  const projects = await getTrustedProjectsFromSession(session);
-  const project = requireTrustedProjectSafe(projects, projectId);
-  const threads = await listProjectThreads(session, project);
-  const selected = resolveDispatchThread(threads, {
+  const target = await resolveDispatchTarget(session, {
+    projectId,
     threadId,
     threadName,
     query,
     createIfMissing,
   });
 
-  let targetThread = selected.thread;
-  let warning = null;
-  if (selected.created) {
-    const created = await createThreadAction(session, {
-      projectId: project.projectId,
-      name: makeDispatchThreadName(threadName),
+  return deliverMessageToThread(session, {
+    project: target.project,
+    thread: target.targetThread,
+    message,
+    timeoutSec,
+    resolution: target.resolution,
+    created: target.created,
+    warning: target.warning,
+  });
+}
+
+export async function dispatchAsyncAction(session, {
+  projectId,
+  message,
+  threadId,
+  threadName,
+  query,
+  createIfMissing = false,
+  timeoutSec,
+  callbackThreadId,
+}) {
+  const target = await resolveDispatchTarget(session, {
+    projectId,
+    threadId,
+    threadName,
+    query,
+    createIfMissing,
+  });
+  const normalizedTimeoutSec = normalizeTimeoutSeconds(timeoutSec, Math.ceil(session.turnTimeoutMs / 1000));
+  const acceptedAt = new Date().toISOString();
+  const dispatchId = randomUUID();
+  const record = await createDispatchRecord({
+    dispatchId,
+    projectId: target.project.projectId,
+    threadId: target.targetThread.threadId,
+    threadName: target.targetThread.name,
+    message,
+    timeoutSec: normalizedTimeoutSec,
+    created: target.created,
+    resolution: target.resolution,
+    dispatchStatus: "queued",
+    callbackThreadId,
+    callbackStatus: callbackThreadId ? "pending" : "not_requested",
+    createdAt: acceptedAt,
+    acceptedAt,
+    updatedAt: acceptedAt,
+    warning: target.warning,
+  });
+
+  try {
+    scheduleAsyncDispatchWorker(dispatchId);
+  } catch (error) {
+    const normalized = normalizeRelayError(error);
+    await updateDispatchRecord(dispatchId, (current) => ({
+      ...current,
+      dispatchStatus: "failed",
+      errorCode: normalized.relayCode,
+      errorMessage: normalized.message,
+      updatedAt: new Date().toISOString(),
+    }));
+    throw relayError("internal_error", `Failed to schedule async relay dispatch ${dispatchId}.`, {
+      dispatchId,
+      cause: normalized.message,
     });
-    warning = created.payload.warning ?? null;
-    const visibleThread = await waitForThreadVisibility(session, created.payload.threadId);
-    targetThread = {
-      threadId: created.payload.threadId,
-      name: visibleThread?.name || created.payload.threadName,
-      status: visibleThread?.status?.type || "idle",
-      lastActivityAt: created.payload.lastUsedAt,
-      projectId: project.projectId,
-      cwd: project.path,
-      remembered: true,
-      createdAt: created.payload.createdAt,
-      lastUsedAt: created.payload.lastUsedAt,
-      lastTurnId: created.payload.lastTurnId,
+  }
+
+  const payload = {
+    dispatchId: record.dispatchId,
+    projectId: record.projectId,
+    threadId: record.threadId,
+    threadName: record.threadName,
+    created: record.created,
+    resolution: record.resolution,
+    acceptedAt: record.acceptedAt,
+    callbackRequested: Boolean(record.callbackThreadId),
+    statePath: relayStatePath(),
+  };
+  return {
+    text: formatAsyncDispatchAcceptedText(payload),
+    payload,
+  };
+}
+
+export async function dispatchStatusAction({ dispatchId }) {
+  const record = await getDispatchRecord(dispatchId);
+  if (!record) {
+    throw relayError("dispatch_not_found", `Dispatch not found: ${dispatchId}`, {
+      dispatchId,
+    });
+  }
+
+  const payload = buildDispatchStatusPayload(record, await inspectDispatchRuntime(record));
+  return {
+    text: formatDispatchStatusText(payload),
+    payload,
+  };
+}
+
+async function recoverSingleDispatch(session, { dispatchId, callbackThreadId }) {
+  const record = await getDispatchRecord(dispatchId);
+  if (!record) {
+    throw relayError("dispatch_not_found", `Dispatch not found: ${dispatchId}`, {
+      dispatchId,
+    });
+  }
+
+  const initialRuntime = await inspectDispatchRuntime(record);
+  const syncedRecord = await syncDispatchTurnIdFromLease(record, initialRuntime);
+  let runtime = syncedRecord === record ? initialRuntime : await inspectDispatchRuntime(syncedRecord);
+  const normalizedCallbackThreadId = typeof callbackThreadId === "string" && callbackThreadId.trim().length > 0
+    ? callbackThreadId.trim()
+    : syncedRecord.callbackThreadId;
+  let workingRecord = syncedRecord;
+
+  if (normalizedCallbackThreadId && normalizedCallbackThreadId !== syncedRecord.callbackThreadId) {
+    workingRecord = await updateDispatchRecord(dispatchId, (current) => ({
+      ...current,
+      callbackThreadId: normalizedCallbackThreadId,
+      callbackStatus: current.callbackStatus === "delivered" ? current.callbackStatus : "pending",
+      callbackErrorCode: null,
+      callbackErrorMessage: null,
+      updatedAt: new Date().toISOString(),
+    })) ?? syncedRecord;
+    runtime = await inspectDispatchRuntime(workingRecord);
+  }
+  const recoveryAction = runtime.recoverySuggested ?? "none";
+
+  if (runtime.dispatchLeaseActive) {
+    const payload = {
+      ...buildDispatchStatusPayload(workingRecord, runtime),
+      recoveryAction,
+    };
+    return {
+      text: formatRecoverStatusText(payload),
+      payload,
     };
   }
 
-  return deliverMessageToThread(session, {
-    project,
-    thread: targetThread,
-    message,
-    timeoutSec,
-    resolution: selected.resolution,
-    created: selected.created,
-    warning,
+  if ((workingRecord.dispatchStatus === "queued" || workingRecord.dispatchStatus === "running")
+    && !workingRecord.turnId
+    && !runtime.threadLeaseTurnId
+    && runtime.threadLeaseActive) {
+    const payload = {
+      ...buildDispatchStatusPayload(workingRecord, runtime),
+      recoveryAction,
+    };
+    return {
+      text: formatRecoverStatusText(payload),
+      payload,
+    };
+  }
+
+  const allowTimedOutTurnRecovery = workingRecord.dispatchStatus === "timed_out" && Boolean(workingRecord.turnId);
+  const allowFailedCallbackRetry = workingRecord.callbackStatus === "failed";
+  const recoveredRecord = await processAsyncDispatchWithSession(session, dispatchId, {
+    allowTimedOutTurnRecovery,
+    allowFailedCallbackRetry,
   });
+  const payload = {
+    ...buildDispatchStatusPayload(recoveredRecord, await inspectDispatchRuntime(recoveredRecord)),
+    recoveryAction,
+  };
+  return {
+    text: formatRecoverStatusText(payload),
+    payload,
+  };
+}
+
+export async function dispatchDeliverAction(session, { dispatchId, callbackThreadId }) {
+  const record = await getDispatchRecord(dispatchId);
+  if (!record) {
+    throw relayError("dispatch_not_found", `Dispatch not found: ${dispatchId}`, {
+      dispatchId,
+    });
+  }
+
+  const normalizedCallbackThreadId = typeof callbackThreadId === "string" && callbackThreadId.trim().length > 0
+    ? callbackThreadId.trim()
+    : record.callbackThreadId;
+  if (!normalizedCallbackThreadId) {
+    throw relayError("callback_target_invalid", `Dispatch ${dispatchId} does not have a callback thread.`, {
+      dispatchId,
+    });
+  }
+
+  if (!isTerminalDispatchStatus(record.dispatchStatus)) {
+    const payload = buildDispatchStatusPayload({
+      ...record,
+      callbackThreadId: normalizedCallbackThreadId,
+    }, await inspectDispatchRuntime(record));
+    return {
+      text: formatDeliverStatusText(payload),
+      payload,
+    };
+  }
+
+  const callbackAttempt = await tryDeliverCallback(session, record, normalizedCallbackThreadId, {
+    throwOnInvalidTarget: true,
+  });
+  const payload = buildDispatchStatusPayload(callbackAttempt.record, await inspectDispatchRuntime(callbackAttempt.record));
+  return {
+    text: formatDeliverStatusText(payload),
+    payload,
+  };
+}
+
+export async function dispatchRecoverAction(session, { dispatchId, projectId, callbackThreadId, limit }) {
+  if (typeof dispatchId === "string" && dispatchId.trim().length > 0) {
+    return recoverSingleDispatch(session, { dispatchId, callbackThreadId });
+  }
+
+  let normalizedProjectId = null;
+  if (typeof projectId === "string" && projectId.trim().length > 0) {
+    const projects = await getTrustedProjectsFromSession(session);
+    normalizedProjectId = requireTrustedProjectSafe(projects, projectId).projectId;
+  }
+
+  const parsedLimit = Number.parseInt(String(limit ?? DEFAULT_RECOVER_BATCH_LIMIT), 10);
+  const recoverLimit = Math.max(
+    1,
+    Math.min(DEFAULT_RECOVER_BATCH_LIMIT, Number.isFinite(parsedLimit) ? parsedLimit : DEFAULT_RECOVER_BATCH_LIMIT),
+  );
+  const records = await listDispatchRecords(normalizedProjectId);
+  const candidates = [];
+
+  for (const record of records) {
+    const runtime = await inspectDispatchRuntime(record);
+    if (!isActionableRecovery(runtime) || runtime.dispatchLeaseActive) {
+      continue;
+    }
+
+    candidates.push(record);
+    if (candidates.length >= recoverLimit) {
+      break;
+    }
+  }
+
+  const recovered = [];
+  for (const record of candidates) {
+    recovered.push((await recoverSingleDispatch(session, {
+      dispatchId: record.dispatchId,
+      callbackThreadId,
+    })).payload);
+  }
+
+  const payload = {
+    projectId: normalizedProjectId,
+    recovered,
+    scannedCount: records.length,
+    recoveredCount: recovered.length,
+    statePath: relayStatePath(),
+  };
+  return {
+    text: formatRecoverBatchText(payload),
+    payload,
+  };
 }

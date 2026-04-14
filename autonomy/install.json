@@ -1,0 +1,321 @@
+{
+  "version": 1,
+  "product_version": "0.1.0",
+  "installed_at": "2026-04-13T12:10:43.777Z",
+  "managed_paths": [
+    ".agents/skills/$autonomy-intake/SKILL.md",
+    ".agents/skills/$autonomy-plan/SKILL.md",
+    ".agents/skills/$autonomy-report/SKILL.md",
+    ".agents/skills/$autonomy-review/SKILL.md",
+    ".agents/skills/$autonomy-sprint/SKILL.md",
+    ".agents/skills/$autonomy-work/SKILL.md",
+    ".codex/config.toml",
+    ".codex/environments/environment.toml",
+    "AGENTS.md",
+    "autonomy/blockers.json",
+    "autonomy/goal.md",
+    "autonomy/goals.json",
+    "autonomy/install.json",
+    "autonomy/journal.md",
+    "autonomy/proposals.json",
+    "autonomy/results.json",
+    "autonomy/schema/blockers.schema.json",
+    "autonomy/schema/goals.schema.json",
+    "autonomy/schema/proposals.schema.json",
+    "autonomy/schema/results.schema.json",
+    "autonomy/schema/settings.schema.json",
+    "autonomy/schema/state.schema.json",
+    "autonomy/schema/tasks.schema.json",
+    "autonomy/schema/verification.schema.json",
+    "autonomy/settings.json",
+    "autonomy/state.json",
+    "autonomy/tasks.json",
+    "autonomy/verification.json",
+    "scripts/review.ps1",
+    "scripts/setup.windows.ps1",
+    "scripts/smoke.ps1",
+    "scripts/verify.ps1"
+  ],
+  "source_repo": ".",
+  "managed_files": [
+    {
+      "path": ".agents/skills/$autonomy-intake/SKILL.md",
+      "template_id": "autonomy_intake_skill_markdown",
+      "installed_hash": "3fb91b76a201960f6d92589b203a0c8d022b507d7b4c69a7bc3781c96dc7fbc0",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "repo_customized",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": ".agents/skills/$autonomy-plan/SKILL.md",
+      "template_id": "autonomy_plan_skill_markdown",
+      "installed_hash": "e4aa447374eb0468299600a96b5d8fe75b25b16a140aca2d9c8b3d66105aabe1",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "repo_customized",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": ".agents/skills/$autonomy-report/SKILL.md",
+      "template_id": "autonomy_report_skill_markdown",
+      "installed_hash": "f42239f81623409c8d6382915958c9a15ac8f21988c49d9dd952446b34f6e1f6",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "repo_customized",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": ".agents/skills/$autonomy-review/SKILL.md",
+      "template_id": "autonomy_review_skill_markdown",
+      "installed_hash": "e44a424690e80de11d33f1559b4163559c14736730a79c73d45e4a1a597fee49",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "repo_customized",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": ".agents/skills/$autonomy-sprint/SKILL.md",
+      "template_id": "autonomy_sprint_skill_markdown",
+      "installed_hash": "adbf6c211252a8c3e49a662326f39a3bad1cd4dda8dad3b97bf542a5ed368c18",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "repo_customized",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": ".agents/skills/$autonomy-work/SKILL.md",
+      "template_id": "autonomy_work_skill_markdown",
+      "installed_hash": "3ee2e5e44224aafa4b695bbb017ee37aefaaae6151e23fedf681197a43cf00ac",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "repo_customized",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": ".codex/config.toml",
+      "template_id": "config_toml",
+      "installed_hash": "86cf8cccac42ad21073371d1f7209690571cc7831c47f5d0521c960973f37286",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "repo_customized",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": ".codex/environments/environment.toml",
+      "template_id": "environment_toml",
+      "installed_hash": "0a1c82f6ad89c44be5e965a03b25153c0f6ddff9ffacf3ec4b5977863ed2393d",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "repo_customized",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": "AGENTS.md",
+      "template_id": "agents_markdown",
+      "installed_hash": "a481a6502e2c815f5a080603e2d54f35660cdcc9e79c9c15ee17a2a88fbbd212",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "repo_customized",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": "autonomy/blockers.json",
+      "template_id": "blockers_json",
+      "installed_hash": "c78c40737f898a370c0cc4a06c60662d13a0197a10127296ede1e8467b8a4fa8",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "runtime_state",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": "autonomy/goal.md",
+      "template_id": "goal_markdown",
+      "installed_hash": "5bb5e6a7dfc63099716d881ff0c0999b1169722801d4f176ec3c23d216468ee4",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "runtime_state",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": "autonomy/goals.json",
+      "template_id": "goals_json",
+      "installed_hash": "179376a0301e09085a98d2d507ce156ba97d645bf72ad6d22cf409a5f9714102",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "runtime_state",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": "autonomy/journal.md",
+      "template_id": "journal_markdown",
+      "installed_hash": "87a04774dd3b375b2e2187dbe6883ece58197e6a3d18faebae2fa7a751b1cde7",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "runtime_state",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": "autonomy/proposals.json",
+      "template_id": "proposals_json",
+      "installed_hash": "020d4b152d2c7a2e6b795900f06e271683602db74d46aaaf7333d7a3e94bab06",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "runtime_state",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": "autonomy/results.json",
+      "template_id": "results_json",
+      "installed_hash": "675ce22e02f531bb0f63c72221760bd0cb70ba2bff083832b0395f6813aa84f4",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "runtime_state",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": "autonomy/schema/blockers.schema.json",
+      "template_id": "blockers_schema_json",
+      "installed_hash": "dea2da18a3104dc9b118b387b4e4d7615863e4c28948eb53d165249a3704bc8e",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "static_template",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": "autonomy/schema/goals.schema.json",
+      "template_id": "goals_schema_json",
+      "installed_hash": "12f2817f8c067332fce92d144e2a8488cbff01c45dd1b6fb0e77e0e3e9d70420",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "static_template",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": "autonomy/schema/proposals.schema.json",
+      "template_id": "proposals_schema_json",
+      "installed_hash": "3965830afbd12d7e28b887651265a2ca727c6df29c9382cff71c889980bc2988",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "static_template",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": "autonomy/schema/results.schema.json",
+      "template_id": "results_schema_json",
+      "installed_hash": "e97ce9f75a31e7515a5f4b6d11c08ac4dc9f293c223f372904f9cbbf2ec8e871",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "static_template",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": "autonomy/schema/settings.schema.json",
+      "template_id": "settings_schema_json",
+      "installed_hash": "6eb1cc5620c3704cb3eb1074b4999ed920061897b0b391417bdfe2f9323b3cf5",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "static_template",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": "autonomy/schema/state.schema.json",
+      "template_id": "state_schema_json",
+      "installed_hash": "82b8167ea5968a8622709451776a7db52d7b45acec7448f5128b6f21e4f83f92",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "static_template",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": "autonomy/schema/tasks.schema.json",
+      "template_id": "tasks_schema_json",
+      "installed_hash": "c3d1882b056f22f7428be334dd2644a342c6a6d1a15f637b5eb149ab1b8ff2ce",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "static_template",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": "autonomy/schema/verification.schema.json",
+      "template_id": "verification_schema_json",
+      "installed_hash": "df26882351e356e3119b693ce4799ea7d5833b3d306e7cc96ad0586d1e1dd0aa",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "static_template",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": "autonomy/settings.json",
+      "template_id": "settings_json",
+      "installed_hash": "b7254efdf88a8dfda06aacc931f043972782726fdcf0d71e292c012b7ac48e7d",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "repo_customized",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": "autonomy/state.json",
+      "template_id": "state_json",
+      "installed_hash": "91d2bddf706c919ae6c8300e8b00545acefe6bcad4fb00be487678ae3066d0ff",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "runtime_state",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": "autonomy/tasks.json",
+      "template_id": "tasks_json",
+      "installed_hash": "711a8e2188c1dd40d9b68839dff69fd5bcdcdec1048600803567263d441a33e4",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "runtime_state",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": "autonomy/verification.json",
+      "template_id": "verification_json",
+      "installed_hash": "915194d393463d091bd4d7c1acafb8eb6fc32faa4190add0ed8683a1519758fa",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "runtime_state",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": "scripts/review.ps1",
+      "template_id": "review_ps1",
+      "installed_hash": "26968b2d147357b35000aac0dff6dc9942659ad45213d10c1ce05cc92480cdcb",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "repo_customized",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": "scripts/setup.windows.ps1",
+      "template_id": "setup_windows_ps1",
+      "installed_hash": "65cf3c6095c6e66d92358ad54a263c1591591fc8add5fbea9049329778de8584",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "repo_customized",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": "scripts/smoke.ps1",
+      "template_id": "smoke_ps1",
+      "installed_hash": "725e9af20e6ff492f39d93553f146edc9f4576aa0071b11a4453e92803c99a0f",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "repo_customized",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    },
+    {
+      "path": "scripts/verify.ps1",
+      "template_id": "verify_ps1",
+      "installed_hash": "d5f5fd8118d1f051ce9392b8d6a04f07cce62e7384e6aacbf0612481f00907d7",
+      "last_reconciled_product_version": "0.1.0",
+      "management_class": "repo_customized",
+      "baseline_origin": "repo_specific",
+      "content_mode": "full_file"
+    }
+  ]
+}

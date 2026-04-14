@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "current_goal_id": null,
+  "current_task_id": null,
+  "cycle_status": "idle",
+  "run_mode": null,
+  "last_planner_run_at": null,
+  "last_worker_run_at": null,
+  "last_result": "noop",
+  "consecutive_worker_failures": 0,
+  "needs_human_review": false,
+  "open_blocker_count": 0,
+  "report_thread_id": null,
+  "autonomy_branch": "codex/autonomy",
+  "sprint_active": false,
+  "paused": false,
+  "pause_reason": null,
+  "last_thread_summary_sent_at": null,
+  "last_inbox_run_at": null
+}

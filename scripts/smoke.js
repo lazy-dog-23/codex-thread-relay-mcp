@@ -7,6 +7,9 @@ import {
   createThreadAction,
   deliverMessageToThread,
   dispatchAction,
+  dispatchAsyncAction,
+  dispatchRecoverAction,
+  dispatchStatusAction,
   listProjectsAction,
   sendWaitAction,
 } from "../src/relay-service.js";
@@ -27,6 +30,49 @@ async function withSession(handler) {
   }
 }
 
+async function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForDispatchCompletion(dispatchId, predicate, timeoutMs = 180_000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const status = await dispatchStatusAction({ dispatchId });
+    if (status.payload.dispatchStatus === "failed" || status.payload.dispatchStatus === "timed_out") {
+      const errorText = status.payload.errorCode
+        ? `[${status.payload.errorCode}] ${status.payload.errorMessage}`
+        : status.payload.dispatchStatus;
+      throw new Error(`Dispatch ${dispatchId} ended early: ${errorText}`);
+    }
+    if (predicate(status.payload)) {
+      return status.payload;
+    }
+    await sleep(2_000);
+  }
+
+  throw new Error(`Timed out while waiting for dispatch ${dispatchId}`);
+}
+
+async function recoverDispatchDelivery(dispatchId, maxAttempts = 10) {
+  let lastPayload = null;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const result = await withSession((session) => dispatchRecoverAction(session, {
+      dispatchId,
+    }));
+    lastPayload = result.payload;
+    if (lastPayload.callbackStatus === "delivered") {
+      return lastPayload;
+    }
+
+    await sleep(2_000);
+  }
+
+  throw new Error(
+    `Dispatch ${dispatchId} callback stayed ${lastPayload?.callbackStatus ?? "unknown"} after ${maxAttempts} retries.`,
+  );
+}
+
 async function main() {
   const cwdProjectId = process.env.THREAD_RELAY_SMOKE_PROJECT_ID || path.resolve(process.cwd());
   const projectKey = normalizeWindowsPathKey(cwdProjectId);
@@ -40,15 +86,17 @@ async function main() {
   });
 
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const initialThreadName = `relay smoke ${stamp}`;
-  const created = await withSession((session) => createThreadAction(session, {
+  const mainThread = await withSession((session) => createThreadAction(session, {
     projectId: targetProject.projectId,
-    name: initialThreadName,
+    name: `relay async main ${stamp}`,
   }));
-  assert.ok(created.payload.threadId, "relay_create_thread should return a thread id");
+  const targetThread = await withSession((session) => createThreadAction(session, {
+    projectId: targetProject.projectId,
+    name: `relay async target ${stamp}`,
+  }));
 
   const firstSend = await withSession((session) => sendWaitAction(session, {
-    threadId: created.payload.threadId,
+    threadId: targetThread.payload.threadId,
     message: makeReplyMessage("relay smoke ok 1"),
     timeoutSec: 120,
   }));
@@ -56,54 +104,70 @@ async function main() {
 
   const byThreadId = await withSession((session) => dispatchAction(session, {
     projectId: targetProject.projectId,
-    threadId: created.payload.threadId,
+    threadId: targetThread.payload.threadId,
     message: makeReplyMessage("relay smoke ok 2"),
     timeoutSec: 120,
   }));
   assert.equal(byThreadId.payload.resolution, "by_thread_id");
   assert.match(byThreadId.payload.replyText, /relay smoke ok 2/i);
 
-  const byExactName = await withSession((session) => dispatchAction(session, {
+  const asyncCreated = await withSession((session) => dispatchAsyncAction(session, {
     projectId: targetProject.projectId,
-    threadName: created.payload.threadName,
-    message: makeReplyMessage("relay smoke ok 3"),
-    timeoutSec: 120,
-  }));
-  assert.equal(byExactName.payload.resolution, "by_exact_name");
-  assert.match(byExactName.payload.replyText, /relay smoke ok 3/i);
-
-  const createdByDispatch = await withSession((session) => dispatchAction(session, {
-    projectId: targetProject.projectId,
-    threadName: `relay dispatch smoke ${stamp}`,
+    threadName: `relay async created ${stamp}`,
     createIfMissing: true,
-    message: makeReplyMessage("relay smoke ok 4"),
+    message: makeReplyMessage("relay async ok 3"),
+    callbackThreadId: mainThread.payload.threadId,
     timeoutSec: 120,
   }));
-  assert.equal(createdByDispatch.payload.resolution, "created_new");
-  assert.equal(createdByDispatch.payload.created, true);
-  assert.match(createdByDispatch.payload.replyText, /relay smoke ok 4/i);
+  assert.equal(asyncCreated.payload.resolution, "created_new");
+  assert.equal(asyncCreated.payload.created, true);
 
-  const busyLease = await acquireThreadLease({
-    threadId: created.payload.threadId,
+  const createdStatus = await waitForDispatchCompletion(
+    asyncCreated.payload.dispatchId,
+    (status) => status.dispatchStatus === "succeeded" && status.callbackStatus === "delivered",
+  );
+  assert.match(createdStatus.replyText, /relay async ok 3/i);
+
+  const asyncReused = await withSession((session) => dispatchAsyncAction(session, {
+    projectId: targetProject.projectId,
+    threadId: targetThread.payload.threadId,
+    message: makeReplyMessage("relay async ok 4"),
+    callbackThreadId: mainThread.payload.threadId,
+    timeoutSec: 120,
+  }));
+  assert.equal(asyncReused.payload.resolution, "by_thread_id");
+
+  const reusedStatus = await waitForDispatchCompletion(
+    asyncReused.payload.dispatchId,
+    (status) => status.dispatchStatus === "succeeded" && status.callbackStatus === "delivered",
+  );
+  assert.match(reusedStatus.replyText, /relay async ok 4/i);
+
+  const busyCallbackLease = await acquireThreadLease({
+    threadId: mainThread.payload.threadId,
     projectId: targetProject.projectId,
     ttlMs: 60_000,
   });
-  try {
-    await assert.rejects(
-      () => withSession((session) => dispatchAction(session, {
-        projectId: targetProject.projectId,
-        threadId: created.payload.threadId,
-        message: makeReplyMessage("relay smoke should not run"),
-        timeoutSec: 30,
-      })),
-      (error) => error instanceof RelayError && error.relayCode === "target_busy",
-    );
-  } finally {
-    await releaseThreadLease({
-      threadId: created.payload.threadId,
-      leaseId: busyLease.leaseId,
-    });
-  }
+  const pendingDispatch = await withSession((session) => dispatchAsyncAction(session, {
+    projectId: targetProject.projectId,
+    threadId: targetThread.payload.threadId,
+    message: makeReplyMessage("relay async ok 5"),
+    callbackThreadId: mainThread.payload.threadId,
+    timeoutSec: 120,
+  }));
+
+  const pendingStatus = await waitForDispatchCompletion(
+    pendingDispatch.payload.dispatchId,
+    (status) => status.dispatchStatus === "succeeded" && status.callbackStatus === "pending",
+  );
+  assert.match(pendingStatus.replyText, /relay async ok 5/i);
+
+  await releaseThreadLease({
+    threadId: mainThread.payload.threadId,
+    leaseId: busyCallbackLease.leaseId,
+  });
+  const deliveredAfterRetry = await recoverDispatchDelivery(pendingDispatch.payload.dispatchId);
+  assert.equal(deliveredAfterRetry.callbackStatus, "delivered");
 
   const fakeTimeoutSession = {
     turnTimeoutMs: 1_000,

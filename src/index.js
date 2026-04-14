@@ -6,7 +6,11 @@ import { CodexAppServerSession } from "./app-server-client.js";
 import { toMcpError } from "./errors.js";
 import {
   createThreadAction,
+  dispatchAsyncAction,
+  dispatchDeliverAction,
+  dispatchRecoverAction,
   dispatchAction,
+  dispatchStatusAction,
   listProjectsAction,
   listThreadsAction,
   sendWaitAction,
@@ -32,6 +36,15 @@ async function withSession(handler) {
 async function runTool(handler) {
   try {
     const result = await withSession(handler);
+    return makeToolResult(result.text, result.payload);
+  } catch (error) {
+    throw toMcpError(error);
+  }
+}
+
+async function runLocalTool(handler) {
+  try {
+    const result = await handler();
     return makeToolResult(result.text, result.payload);
   } catch (error) {
     throw toMcpError(error);
@@ -105,6 +118,71 @@ server.tool(
       query,
       createIfMissing,
       timeoutSec,
+    })),
+);
+
+server.tool(
+  "relay_dispatch_async",
+  "Resolve or create a target thread inside a trusted project, enqueue one delegated request asynchronously, and optionally callback another thread on completion.",
+  {
+    projectId: z.string().min(1),
+    message: z.string().trim().min(1),
+    threadId: z.string().trim().min(1).optional(),
+    threadName: z.string().trim().min(1).max(120).optional(),
+    query: z.string().trim().min(1).optional(),
+    createIfMissing: z.boolean().optional(),
+    callbackThreadId: z.string().trim().min(1).optional(),
+    timeoutSec: z.number().int().positive().max(3600).optional(),
+  },
+  async ({ projectId, message, threadId, threadName, query, createIfMissing, callbackThreadId, timeoutSec }) =>
+    runTool((session) => dispatchAsyncAction(session, {
+      projectId,
+      message,
+      threadId,
+      threadName,
+      query,
+      createIfMissing,
+      callbackThreadId,
+      timeoutSec,
+    })),
+);
+
+server.tool(
+  "relay_dispatch_status",
+  "Read the durable status of a previously accepted async relay dispatch.",
+  {
+    dispatchId: z.string().trim().min(1),
+  },
+  async ({ dispatchId }) =>
+    runLocalTool(() => dispatchStatusAction({ dispatchId })),
+);
+
+server.tool(
+  "relay_dispatch_deliver",
+  "Retry delivery of an async relay completion callback into a source thread.",
+  {
+    dispatchId: z.string().trim().min(1),
+    callbackThreadId: z.string().trim().min(1).optional(),
+  },
+  async ({ dispatchId, callbackThreadId }) =>
+    runTool((session) => dispatchDeliverAction(session, { dispatchId, callbackThreadId })),
+);
+
+server.tool(
+  "relay_dispatch_recover",
+  "Recover one async relay dispatch, or batch-recover pending/stale async relay dispatches when that is safe.",
+  {
+    dispatchId: z.string().trim().min(1).optional(),
+    projectId: z.string().trim().min(1).optional(),
+    callbackThreadId: z.string().trim().min(1).optional(),
+    limit: z.number().int().positive().max(20).optional(),
+  },
+  async ({ dispatchId, projectId, callbackThreadId, limit }) =>
+    runTool((session) => dispatchRecoverAction(session, {
+      dispatchId,
+      projectId,
+      callbackThreadId,
+      limit,
     })),
 );
 

@@ -20,12 +20,16 @@ function parseArgs(value, fallbackCommand) {
           "@openai/codex@latest",
           "app-server",
           "-c",
+          'approval_policy="never"',
+          "-c",
           'service_tier="fast"',
           "-c",
           "mcp_servers.threadRelay.enabled=false",
         ]
       : [
           "app-server",
+          "-c",
+          'approval_policy="never"',
           "-c",
           'service_tier="fast"',
           "-c",
@@ -520,15 +524,74 @@ export function isSuccessfulTurn(turn) {
 }
 
 export function buildEnvelope(message) {
+  const controlSurfaceHint = buildControlSurfaceHint(message);
   return [
     "[Codex Thread Relay]",
     "This request was delegated from another local Codex thread.",
+    "Treat the delegated request below exactly as the current user request in this repository.",
+    "Follow the repo-local AGENTS.md, repo-local skills, and global skills that would have applied if the user typed it directly.",
+    "Approval prompts may be disabled for this delegated thread. Act conservatively: no destructive or high-impact operations, no writes outside the target repo, no force push/history rewrite/bulk delete/deploy/credential mutation unless the user explicitly asked and the repo control surface still allows it.",
+    "If the delegated request is a control-surface phrase such as `汇报当前情况`, `继续当前目标`, `处理下一个目标`, `用冲刺模式推进这个目标`, or `用巡航模式推进这个目标`, run the corresponding codex-autonomy flow from the repo root before answering.",
+    "Do not answer control-surface status from memory, earlier doctor output, or stale blockers when a fresh codex-autonomy status/report command should be used.",
+    ...(controlSurfaceHint ? ["", "Relay control-surface hint:", ...controlSurfaceHint] : []),
     "Complete the task in the current target thread and reply with only the final answer body that should be returned to the source thread.",
     "Do not explain relay mechanics or mention internal tooling unless the task itself requires it.",
     "",
     "Delegated request:",
     message,
   ].join("\n");
+}
+
+function buildControlSurfaceHint(message) {
+  const text = String(message ?? "").trim();
+  if (!text) {
+    return null;
+  }
+
+  if (text.includes("汇报当前情况")) {
+    return [
+      "- Run `codex-autonomy status` from the repo root before answering.",
+      "- Only use `codex-autonomy report` when the delegated request explicitly asks for a detailed result summary.",
+      "- If the status output warns `git_runtime_probe_deferred` or `background_runtime_probe_deferred`, run `git status --short` from the repo root before trusting readiness, and treat unmanaged diffs as the effective blocker.",
+      "- Quote `automation_state`, `ready_for_automation`, `next_automation_reason`, and `report_thread_id` directly from the latest CLI output.",
+    ];
+  }
+
+  if (text.includes("继续当前目标") || text.includes("处理下一个目标")) {
+    return [
+      "- Run `codex-autonomy status` from the repo root before doing any work.",
+      "- If the status output warns `git_runtime_probe_deferred` or `background_runtime_probe_deferred`, run `git status --short` from the repo root before trusting readiness; if unmanaged diffs are present, report them and stop.",
+      "- If `ready_for_automation=false`, return `next_automation_reason` and stop.",
+      "- If `ready_for_automation=true`, continue only one bounded control-surface loop for the current goal.",
+    ];
+  }
+
+  if (text.includes("用冲刺模式推进这个目标")) {
+    return [
+      "- Run `codex-autonomy status` from the repo root first.",
+      "- If the status output warns `git_runtime_probe_deferred` or `background_runtime_probe_deferred`, run `git status --short` from the repo root before trusting readiness; if unmanaged diffs are present, report them and stop.",
+      "- If there is an active goal and it is not already in sprint mode, switch it to sprint mode before continuing.",
+      "- Continue only one bounded sprint loop through the repo-local autonomy control surface.",
+    ];
+  }
+
+  if (text.includes("用巡航模式推进这个目标")) {
+    return [
+      "- Run `codex-autonomy status` from the repo root first.",
+      "- If the status output warns `git_runtime_probe_deferred` or `background_runtime_probe_deferred`, run `git status --short` from the repo root before trusting readiness; if unmanaged diffs are present, report them and stop.",
+      "- If there is an active goal and it is not already in cruise mode, switch it to cruise mode before continuing.",
+      "- Keep the answer bounded to the current ready state unless the delegated request explicitly asks for immediate work.",
+    ];
+  }
+
+  if (text.includes("确认提案")) {
+    return [
+      "- Identify the active `awaiting_confirmation` goal from `codex-autonomy status` or the repo control-plane files.",
+      "- Run `codex-autonomy approve-proposal --goal-id <goalId>` before answering.",
+    ];
+  }
+
+  return null;
 }
 
 export function normalizeTimeoutSeconds(value, fallbackSeconds) {

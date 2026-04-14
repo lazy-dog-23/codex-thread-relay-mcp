@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "install_source": "local_package",
+  "initial_confirmation_required": true,
+  "report_surface": "thread_and_inbox",
+  "auto_commit": "autonomy_branch",
+  "autonomy_branch": "codex/autonomy",
+  "auto_continue_within_goal": true,
+  "block_on_major_decision": true,
+  "default_cruise_cadence": {
+    "planner_hours": 6,
+    "worker_hours": 2,
+    "reviewer_hours": 6
+  },
+  "default_sprint_heartbeat_minutes": 15
+}

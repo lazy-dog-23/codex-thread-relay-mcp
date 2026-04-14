@@ -1,0 +1,13 @@
+#:schema https://developers.openai.com/codex/config-schema.json
+
+approval_policy = "never"
+sandbox_mode = "workspace-write"
+model = "gpt-5.4"
+model_reasoning_effort = "xhigh"
+service_tier = "fast"
+
+[sandbox_workspace_write]
+network_access = true
+
+[windows]
+sandbox = "unelevated"

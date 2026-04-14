@@ -1,0 +1,668 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codex-auto.local/schema/results.schema.json",
+  "title": "AutonomyResultsFile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "planner",
+    "worker",
+    "review",
+    "commit",
+    "reporter"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "last_thread_summary_sent_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "last_inbox_run_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "last_summary_kind": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "normal_success",
+        "thread_summary",
+        "immediate_exception",
+        "goal_transition",
+        null
+      ]
+    },
+    "last_summary_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "latest_goal_transition": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "from_goal_id",
+        "to_goal_id",
+        "happened_at"
+      ],
+      "properties": {
+        "from_goal_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "to_goal_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "happened_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      }
+    },
+    "planner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "goal_id",
+        "summary"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "not_run",
+            "noop",
+            "planned",
+            "passed",
+            "failed",
+            "blocked",
+            "sent",
+            "skipped"
+          ]
+        },
+        "goal_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "happened_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "sent_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "verify_summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "review_status": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "not_reviewed",
+            "passed",
+            "followup_required",
+            null
+          ]
+        },
+        "next_step_summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "continuation_decision": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "none",
+            "auto_continued",
+            "needs_confirmation",
+            null
+          ]
+        },
+        "verification_pending_axes": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": null
+        }
+      }
+    },
+    "worker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "goal_id",
+        "summary"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "not_run",
+            "noop",
+            "planned",
+            "passed",
+            "failed",
+            "blocked",
+            "sent",
+            "skipped"
+          ]
+        },
+        "goal_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "happened_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "sent_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "verify_summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "review_status": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "not_reviewed",
+            "passed",
+            "followup_required",
+            null
+          ]
+        },
+        "next_step_summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "continuation_decision": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "none",
+            "auto_continued",
+            "needs_confirmation",
+            null
+          ]
+        },
+        "verification_pending_axes": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": null
+        }
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "goal_id",
+        "summary"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "not_run",
+            "noop",
+            "planned",
+            "passed",
+            "failed",
+            "blocked",
+            "sent",
+            "skipped"
+          ]
+        },
+        "goal_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "happened_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "sent_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "verify_summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "review_status": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "not_reviewed",
+            "passed",
+            "followup_required",
+            null
+          ]
+        },
+        "next_step_summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "continuation_decision": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "none",
+            "auto_continued",
+            "needs_confirmation",
+            null
+          ]
+        },
+        "verification_pending_axes": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": null
+        }
+      }
+    },
+    "commit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "goal_id",
+        "summary"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "not_run",
+            "noop",
+            "planned",
+            "passed",
+            "failed",
+            "blocked",
+            "sent",
+            "skipped"
+          ]
+        },
+        "goal_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "happened_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "sent_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "verify_summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "review_status": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "not_reviewed",
+            "passed",
+            "followup_required",
+            null
+          ]
+        },
+        "next_step_summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "continuation_decision": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "none",
+            "auto_continued",
+            "needs_confirmation",
+            null
+          ]
+        },
+        "verification_pending_axes": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": null
+        }
+      }
+    },
+    "reporter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "goal_id",
+        "summary"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "not_run",
+            "noop",
+            "planned",
+            "passed",
+            "failed",
+            "blocked",
+            "sent",
+            "skipped"
+          ]
+        },
+        "goal_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "happened_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "sent_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "verify_summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "review_status": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "not_reviewed",
+            "passed",
+            "followup_required",
+            null
+          ]
+        },
+        "next_step_summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "continuation_decision": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "none",
+            "auto_continued",
+            "needs_confirmation",
+            null
+          ]
+        },
+        "verification_pending_axes": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": null
+        }
+      }
+    }
+  }
+}

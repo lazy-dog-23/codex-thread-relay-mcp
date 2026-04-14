@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codex-auto.local/schema/settings.schema.json",
+  "title": "AutonomySettingsFile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "install_source",
+    "initial_confirmation_required",
+    "report_surface",
+    "auto_commit",
+    "autonomy_branch",
+    "auto_continue_within_goal",
+    "block_on_major_decision",
+    "default_cruise_cadence",
+    "default_sprint_heartbeat_minutes"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "install_source": {
+      "type": "string",
+      "enum": [
+        "local_package"
+      ]
+    },
+    "initial_confirmation_required": {
+      "type": "boolean"
+    },
+    "report_surface": {
+      "type": "string",
+      "enum": [
+        "thread_and_inbox"
+      ]
+    },
+    "auto_commit": {
+      "type": "string",
+      "enum": [
+        "disabled",
+        "autonomy_branch"
+      ]
+    },
+    "autonomy_branch": {
+      "type": "string",
+      "minLength": 1
+    },
+    "auto_continue_within_goal": {
+      "type": "boolean"
+    },
+    "block_on_major_decision": {
+      "type": "boolean"
+    },
+    "default_cruise_cadence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "planner_hours",
+        "worker_hours",
+        "reviewer_hours"
+      ],
+      "properties": {
+        "planner_hours": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "worker_hours": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reviewer_hours": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "default_sprint_heartbeat_minutes": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}
