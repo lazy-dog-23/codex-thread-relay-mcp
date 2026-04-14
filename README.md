@@ -138,32 +138,16 @@ Replace the example path values before using the config.
 npm run check
 npm test
 npm run smoke
+npm run soak
+npm run audit:official
 pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1
 ```
 
-The repo also includes `npm run soak` for longer async callback and recovery pressure runs.
-
-## License
-
-This repository is released under the MIT License. See [LICENSE](LICENSE).
-
-Replace the example path values with the absolute paths on your own machine.
-
-## Validation
-
-```powershell
-npm run check
-npm test
-npm run smoke
-npm run soak
-npm run audit:official
-```
-
-- `check`: 语法检查
-- `test`: `node:test` 单测，覆盖路径归一化、remembered thread、lease、dispatch 解析和超时错误路径
-- `smoke`: 本地烟测，覆盖创建线程、首次发消息、复用已有线程、`relay_dispatch` create-and-send、busy/timeout 失败路径
-- `soak`: 更长时间的 live async callback 循环，覆盖 repeated async dispatch、并发 fan-out、强制 callback `pending`、批量 recover、状态查询稳定性
-- `audit:official`: 强制走 `https://registry.npmjs.org` 的依赖审计，避免镜像缺失 audit endpoint 时误判
+- `check`: syntax checks for the runtime entrypoints and scripts
+- `test`: `node:test` coverage for path normalization, leases, dispatch resolution, async delivery, and error propagation
+- `smoke`: live local smoke coverage for create/send/reuse and primary failure paths
+- `soak`: longer async callback and recovery pressure runs
+- `audit:official`: dependency audit against the official npm registry
 
 ## Example Flow
 
@@ -179,3 +163,7 @@ npm run audit:official
 - No cloud threads
 - No archived threads
 - No daemonized long-lived app-server pool
+
+## License
+
+This repository is released under the MIT License. See [LICENSE](LICENSE).
