@@ -18,6 +18,55 @@ Out of scope for this release:
 
 The spawned Windows Codex CLI app-server uses `service_tier="fast"` so delegated turns keep working on Windows installs that reject the local `flex` path.
 
+## Prerequisites
+
+- Windows
+- Node.js 22
+- npm
+- Git
+- PowerShell 7
+- A working Windows Codex App installation
+
+## Installation
+
+### Install dependencies
+
+```powershell
+cd <path-to-codex-thread-relay-mcp>
+npm install
+```
+
+### Register the MCP server
+
+Add this MCP server entry to the Windows Codex config:
+
+```toml
+[mcp_servers.threadRelay]
+type = "stdio"
+command = "node"
+args = ["<absolute-path-to-codex-thread-relay-mcp>\\src\\index.js"]
+required = false
+startup_timeout_sec = 30
+tool_timeout_sec = 900
+
+[mcp_servers.threadRelay.env]
+THREAD_RELAY_CODEX_HOME = "<path-to-your-codex-home>"
+```
+
+Replace the example path values before using the config, then restart the Codex App.
+
+## Upgrade
+
+- Pull the latest repository changes and rerun `npm install`.
+- Restart the Codex App after updating the MCP server code or config.
+- Rerun `npm run check`, `npm test`, and `npm run smoke` before relying on the updated relay in live threads.
+
+## Troubleshooting
+
+- If the relay tools do not appear in Codex, check the MCP config path and restart the Codex App.
+- If `smoke` fails early, confirm the Codex App is running and the target project is already trusted by the Windows Codex App.
+- If async callback delivery stays `pending`, check whether the source thread is busy, then use `relay_dispatch_deliver` or `relay_dispatch_recover`.
+
 ## Public Tools
 
 - `relay_list_projects()`
@@ -90,13 +139,6 @@ Callback messages use the fixed envelope:
 
 Empty threads that were created but have not yet appeared in `thread/list` are still reachable through remembered-thread state.
 
-## Local Setup
-
-```powershell
-cd <path-to-codex-thread-relay-mcp>
-npm install
-```
-
 Default shared Windows home:
 
 - `CODEX_HOME=%USERPROFILE%\.codex`
@@ -112,25 +154,6 @@ Optional environment variables:
 - `THREAD_RELAY_TURN_TIMEOUT_MS`
 - `THREAD_RELAY_DEBUG=1`
 - `THREAD_RELAY_SOAK_CONCURRENCY`
-
-## Codex App Config
-
-Add this MCP server entry to the Windows Codex config:
-
-```toml
-[mcp_servers.threadRelay]
-type = "stdio"
-command = "node"
-args = ["<absolute-path-to-codex-thread-relay-mcp>\\src\\index.js"]
-required = false
-startup_timeout_sec = 30
-tool_timeout_sec = 900
-
-[mcp_servers.threadRelay.env]
-THREAD_RELAY_CODEX_HOME = "<path-to-your-codex-home>"
-```
-
-Replace the example path values before using the config.
 
 ## Verification
 

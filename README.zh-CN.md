@@ -20,6 +20,55 @@ Windows Codex App 线程 relay MCP。
 
 拉起的 Windows Codex CLI app-server 固定使用 `service_tier="fast"`，避免 Windows 安装里本地 `flex` 路径被拒绝时 delegated turn 直接失败。
 
+## 前置条件
+
+- Windows
+- Node.js 22
+- npm
+- Git
+- PowerShell 7
+- 可正常运行的 Windows Codex App
+
+## 安装
+
+### 安装依赖
+
+```powershell
+cd <path-to-codex-thread-relay-mcp>
+npm install
+```
+
+### 注册 MCP server
+
+把下面这段 MCP server 配置加到 Windows Codex config：
+
+```toml
+[mcp_servers.threadRelay]
+type = "stdio"
+command = "node"
+args = ["<absolute-path-to-codex-thread-relay-mcp>\\src\\index.js"]
+required = false
+startup_timeout_sec = 30
+tool_timeout_sec = 900
+
+[mcp_servers.threadRelay.env]
+THREAD_RELAY_CODEX_HOME = "<path-to-your-codex-home>"
+```
+
+把示例路径替换成你自己机器上的绝对路径，然后重启 Codex App。
+
+## 升级
+
+- 拉取最新仓库代码后重新执行 `npm install`。
+- 更新 MCP server 代码或配置后，重启 Codex App。
+- 在真实线程环境依赖更新后的 relay 之前，重新跑一遍 `npm run check`、`npm test` 和 `npm run smoke`。
+
+## 常见问题
+
+- 如果 Codex 里看不到 relay 工具，先检查 MCP 配置路径，再重启 Codex App。
+- 如果 `smoke` 很早就失败，先确认 Codex App 正在运行，并且目标项目已经被 Windows Codex App 标记为 trusted。
+- 如果 async callback 长时间停在 `pending`，先看源线程是否正忙，再使用 `relay_dispatch_deliver` 或 `relay_dispatch_recover`。
+
 ## 公开工具
 
 - `relay_list_projects()`
@@ -84,13 +133,6 @@ relay 自有状态独立存放，不和 `CODEX_HOME` 混在一起：
 
 创建线程后但还没出现在 `thread/list` 里的空线程，仍然会通过 remembered thread 机制被 relay 选中。
 
-## 本地安装
-
-```powershell
-cd <path-to-codex-thread-relay-mcp>
-npm install
-```
-
 默认使用共享 Windows home：
 
 - `CODEX_HOME=%USERPROFILE%\.codex`
@@ -106,25 +148,6 @@ npm install
 - `THREAD_RELAY_TURN_TIMEOUT_MS`
 - `THREAD_RELAY_DEBUG=1`
 - `THREAD_RELAY_SOAK_CONCURRENCY`
-
-## Codex App 配置
-
-把下面这段 MCP server 配置加到 Windows Codex config：
-
-```toml
-[mcp_servers.threadRelay]
-type = "stdio"
-command = "node"
-args = ["<absolute-path-to-codex-thread-relay-mcp>\\src\\index.js"]
-required = false
-startup_timeout_sec = 30
-tool_timeout_sec = 900
-
-[mcp_servers.threadRelay.env]
-THREAD_RELAY_CODEX_HOME = "<path-to-your-codex-home>"
-```
-
-把示例路径替换成你自己机器上的绝对路径。
 
 ## 验证
 
