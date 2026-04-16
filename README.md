@@ -81,6 +81,16 @@ Live thread-relay regression run on a trusted project/thread:
 
 Outcome: `timeout -> status`, `timeout -> recover`, and post-recovery sends are stable. Remaining variability is target-thread runtime duration; short `timeoutSec` values may still time out, but recovery paths close cleanly.
 
+## Recent Validation (2026-04-16)
+
+The recovery path was validated again on a real bound Windows Codex App thread:
+
+1. A long bounded-loop operator request timed out in synchronous `relay_send_wait`, but still returned a recoverable dispatch id.
+2. Follow-up `relay_dispatch_status` first reported `running`, then closed successfully as `succeeded` with the full final reply; the target thread completed its pending verify closeout and marked the active goal completed.
+3. An immediate short follow-up send then succeeded within the normal sync window, confirming the thread was not left permanently busy.
+
+That makes the recovery claim more concrete: on a real thread, `long turn -> send_wait timeout -> dispatch_status success -> follow-up send succeeds` is now proven. The remaining unverified piece in this session is only the system-level `Task Scheduler` wake-up layer; the delegated environment used for this run could not register Windows scheduled tasks or spawn a fresh app-server from the runner.
+
 ## Public Tools
 
 - `relay_list_projects()`
@@ -99,6 +109,26 @@ Dispatch resolution order is fixed:
 2. exact `threadName`
 3. unique `query` match
 4. create a new thread when `createIfMissing=true`
+
+## CLI For Schedulers And Scripts
+
+The relay now also exposes a direct CLI entrypoint for non-interactive runners such as Windows Task Scheduler:
+
+```powershell
+node src/cli.js relay_list_projects --json
+node src/cli.js relay_send_wait --thread-id <thread-id> --message-file .\prompt.md --timeout-sec 45 --json
+node src/cli.js relay_dispatch_status --dispatch-id <dispatch-id> --json
+node src/cli.js relay_dispatch_recover --dispatch-id <dispatch-id> --json
+```
+
+CLI behavior:
+
+- uses the same durable dispatch, lease, busy, timeout, and recovery semantics as the MCP tools
+- returns machine-readable JSON with `ok`, `command`, `payload`, and relay error metadata when `--json` is set
+- accepts long prompts through `--message-file`
+- does not depend on an LLM turn to call MCP tools on its behalf
+
+This is the supported building block for `Task Scheduler -> relay -> bound thread` chains.
 
 ## Error Model
 

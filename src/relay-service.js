@@ -1586,7 +1586,7 @@ export async function sendWaitAction(session, { threadId, message, timeoutSec })
       resolution: "by_thread_id",
       created: false,
       createRecoveryDispatchOnTimeout: true,
-      scheduleRecoveryWorker: () => {},
+      scheduleRecoveryWorker: scheduleAsyncDispatchWorker,
     });
   } catch (error) {
     const busyResult = await buildActiveBusyDispatchResult(error);
@@ -1624,7 +1624,7 @@ export async function dispatchAction(session, {
       created: target.created,
       warning: target.warning,
       createRecoveryDispatchOnTimeout: true,
-      scheduleRecoveryWorker: () => {},
+      scheduleRecoveryWorker: scheduleAsyncDispatchWorker,
     });
   } catch (error) {
     const busyResult = await buildActiveBusyDispatchResult(error);
