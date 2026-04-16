@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
@@ -50,10 +51,25 @@ function parseArgs(value, fallbackCommand) {
     .filter(Boolean);
 }
 
+function resolveDefaultCommand() {
+  if (process.env.THREAD_RELAY_CODEX_COMMAND) {
+    return process.env.THREAD_RELAY_CODEX_COMMAND;
+  }
+
+  if (process.platform === "win32") {
+    const appData = process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
+    const npmCodexCmd = path.join(appData, "npm", "codex.cmd");
+    if (fs.existsSync(npmCodexCmd)) {
+      return npmCodexCmd;
+    }
+    return "npx.cmd";
+  }
+
+  return "npx";
+}
+
 function createLauncherOptions() {
-  const command =
-    process.env.THREAD_RELAY_CODEX_COMMAND ||
-    (process.platform === "win32" ? "npx.cmd" : "npx");
+  const command = resolveDefaultCommand();
   const args = parseArgs(process.env.THREAD_RELAY_CODEX_ARGS, command);
   const codexHome =
     process.env.THREAD_RELAY_CODEX_HOME ||

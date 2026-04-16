@@ -81,6 +81,16 @@ THREAD_RELAY_CODEX_HOME = "<path-to-your-codex-home>"
 
 结论：`timeout -> status`、`timeout -> recover`、以及 recover 后续消息都已稳定跑通。剩余不稳定点来自目标线程本身的耗时波动，短 `timeoutSec` 仍可能超时，但不会再卡死，且可通过 status/recover 正常收口。
 
+## 近期验证结论（2026-04-16）
+
+在一个真实的 Windows Codex App 绑定线程上，继续验证了长回合同步超时后的恢复链：
+
+1. 向绑定线程发送一条长的 bounded-loop operator 指令，同步 `relay_send_wait` 超时，但仍返回了可恢复 dispatch id。
+2. 后续 `relay_dispatch_status` 先返回 `running`，随后成功收口为 `succeeded`，拿到完整最终回复；目标线程完成了待处理的 verify closeout，并将当前 active goal 标记为 completed。
+3. 紧接着再发一条短探测，45 秒窗口内直接成功回包，说明线程没有被永久卡成 busy。
+
+结论更具体了：在真实线程上，`长回合 -> send_wait 超时 -> dispatch_status 成功收口 -> 后续消息继续可发` 已经跑通。剩余未在这次会话里实测的，只是系统级 `Task Scheduler` 唤醒层；当前受限环境无法注册 Windows 计划任务，也不允许 runner 再起一个新的 app-server 子进程，因此未在同一会话里完成系统调度层验收。
+
 ## 公开工具
 
 - `relay_list_projects()`
@@ -99,6 +109,26 @@ THREAD_RELAY_CODEX_HOME = "<path-to-your-codex-home>"
 2. `threadName` 精确命中
 3. `query` 唯一命中
 4. `createIfMissing=true` 时新建线程
+
+## 给调度器和脚本用的 CLI
+
+现在 relay 还额外暴露了一个直接 CLI 入口，适合 Windows Task Scheduler 这类非交互调度器：
+
+```powershell
+node src/cli.js relay_list_projects --json
+node src/cli.js relay_send_wait --thread-id <thread-id> --message-file .\prompt.md --timeout-sec 45 --json
+node src/cli.js relay_dispatch_status --dispatch-id <dispatch-id> --json
+node src/cli.js relay_dispatch_recover --dispatch-id <dispatch-id> --json
+```
+
+CLI 的语义和 MCP 工具保持一致：
+
+- 复用同一套 durable dispatch、lease、busy、timeout 和 recover 语义
+- 开启 `--json` 时，输出稳定机读 JSON：`ok`、`command`、`payload` 以及错误元数据
+- 长 prompt 通过 `--message-file` 传入，不需要把大段文本塞进命令行
+- 不依赖一次 LLM turn 替你调用 MCP 工具
+
+这就是 `Task Scheduler -> relay -> 绑定线程` 这条链路的公开触发入口。
 
 ## 错误模型
 
