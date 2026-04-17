@@ -137,6 +137,9 @@ test("main prints json error payloads with relay metadata", async () => {
           handler: async () => {
             throw new RelayError("target_busy", "Thread is busy", {
               activeDispatchId: "dispatch-busy",
+              usageRole: "bridge",
+              recommendedSurface: "thread_automation",
+              recommendedPattern: "move_to_bound_thread",
             });
           },
         },
@@ -152,4 +155,23 @@ test("main prints json error payloads with relay metadata", async () => {
   assert.equal(parsed.command, "relay_send_wait");
   assert.equal(parsed.relayCode, "target_busy");
   assert.equal(parsed.details.activeDispatchId, "dispatch-busy");
+  assert.equal(parsed.details.usageRole, "bridge");
+  assert.equal(parsed.details.recommendedSurface, "thread_automation");
+  assert.equal(parsed.details.recommendedPattern, "move_to_bound_thread");
+});
+
+test("main help output prefers async/status/recover before send_wait examples", async () => {
+  const stdout = createMemoryStream();
+  const stderr = createMemoryStream();
+
+  const exitCode = await main(["--help"], { stdout, stderr });
+
+  assert.equal(exitCode, 0);
+  assert.equal(stderr.read(), "");
+  const output = stdout.read();
+  assert.ok(output.indexOf("relay_dispatch_async") < output.indexOf("relay_send_wait"));
+  assert.match(output, /relay_dispatch_async --project-id <project-id>/);
+  assert.match(output, /relay_dispatch_status --dispatch-id <dispatch-id>/);
+  assert.match(output, /relay_dispatch_recover --dispatch-id <dispatch-id>/);
+  assert.match(output, /relay_send_wait --thread-id <thread-id> --message-file \.\\probe\.md/);
 });

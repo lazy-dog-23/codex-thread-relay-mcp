@@ -13,7 +13,7 @@ import {
   listThreadsAction,
   sendWaitAction,
 } from "./relay-service.js";
-import { runLocalTool, runTool } from "./tool-runner.js";
+import { runTool } from "./tool-runner.js";
 
 const server = new McpServer({
   name: "codex-thread-relay-mcp",
@@ -51,7 +51,7 @@ server.tool(
 
 server.tool(
   "relay_send_wait",
-  "Send one delegated request to an existing local target thread and wait for its final text reply. Long sync timeouts return a recoveryDispatchId for follow-up status or recovery.",
+  "Send one short delegated request to an existing local target thread and wait for its text reply. For long-running work, prefer official thread automations on the bound thread or relay_dispatch_async plus status/recover.",
   {
     threadId: z.string().min(1),
     message: z.string().trim().min(1),
@@ -63,7 +63,7 @@ server.tool(
 
 server.tool(
   "relay_dispatch",
-  "Resolve or create a target thread inside a trusted project, send one delegated request, and wait for the final text reply. Long sync timeouts return a recoveryDispatchId for follow-up status or recovery.",
+  "Resolve or create a target thread inside a trusted project, send one delegated request, and wait for a short sync reply. For long-running work, prefer official thread automations on the bound thread or relay_dispatch_async plus status/recover.",
   {
     projectId: z.string().min(1),
     message: z.string().trim().min(1),
@@ -87,7 +87,7 @@ server.tool(
 
 server.tool(
   "relay_dispatch_async",
-  "Resolve or create a target thread inside a trusted project, enqueue one delegated request asynchronously, and optionally callback another thread on completion.",
+  "Resolve or create a target thread inside a trusted project, enqueue one delegated request asynchronously, and optionally callback another thread on completion. This is the preferred relay bridge path for long-running delegated work.",
   {
     projectId: z.string().min(1),
     message: z.string().trim().min(1),
@@ -113,12 +113,12 @@ server.tool(
 
 server.tool(
   "relay_dispatch_status",
-  "Read the durable status of a previously accepted async relay dispatch.",
+  "Read the durable status of a previously accepted relay dispatch. The status path also attempts a live refresh from the target turn when the worker is no longer active.",
   {
     dispatchId: z.string().trim().min(1),
   },
   async ({ dispatchId }) =>
-    runLocalTool(() => dispatchStatusAction({ dispatchId })),
+    runTool((session) => dispatchStatusAction(session, { dispatchId })),
 );
 
 server.tool(
@@ -134,7 +134,7 @@ server.tool(
 
 server.tool(
   "relay_dispatch_recover",
-  "Recover one async relay dispatch, or batch-recover pending/stale async relay dispatches when that is safe.",
+  "Recover one relay dispatch, or batch-recover pending/stale relay dispatches when that is safe. Use this to continue bridge work after sync timeout or callback failure.",
   {
     dispatchId: z.string().trim().min(1).optional(),
     projectId: z.string().trim().min(1).optional(),

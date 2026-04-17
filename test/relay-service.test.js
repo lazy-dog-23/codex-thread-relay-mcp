@@ -15,12 +15,14 @@ import {
   sendWaitAction,
 } from "../src/relay-service.js";
 import {
+  acquireDispatchLease,
   acquireThreadLease,
   createDispatchRecord,
   getActiveThreadLease,
   getDispatchRecord,
   listActiveDispatches,
   rememberCreatedThread,
+  relayStatePath,
   updateThreadLease,
 } from "../src/state-store.js";
 
@@ -346,7 +348,11 @@ test("deliverMessageToThread records a recoverable dispatch for sync timeout whe
   assert.ok(thrown instanceof RelayError);
   assert.equal(thrown.relayCode, "turn_timeout");
   assert.match(thrown.message, /Recovery dispatch/);
+  assert.match(thrown.message, /official Codex thread automations/i);
   assert.equal(typeof thrown.details.recoveryDispatchId, "string");
+  assert.equal(thrown.details.usageRole, "bridge");
+  assert.equal(thrown.details.recommendedSurface, "thread_automation");
+  assert.equal(thrown.details.recommendedPattern, "status_then_recover");
   assert.deepEqual(scheduledDispatches, [thrown.details.recoveryDispatchId]);
 
   const recoveryRecord = await getDispatchRecord(thrown.details.recoveryDispatchId);
@@ -422,8 +428,12 @@ test("deliverMessageToThread surfaces the active recovery dispatch id when the t
       assert.equal(error.relayCode, "target_busy");
       assert.equal(error.details.activeDispatchId, "dispatch-active-recovery");
       assert.equal(error.details.activeDispatchStatus, "running");
+      assert.equal(error.details.usageRole, "bridge");
+      assert.equal(error.details.recommendedSurface, "thread_automation");
+      assert.equal(error.details.recommendedPattern, "move_to_bound_thread");
       assert.match(error.message, /dispatch-active-recovery/);
       assert.match(error.message, /relay_dispatch_status/);
+      assert.match(error.message, /official Codex thread automations/i);
       return true;
     },
   );
@@ -513,8 +523,12 @@ test("sendWaitAction returns active dispatch status instead of target_busy when 
   assert.equal(result.payload.newMessageDelivered, false);
   assert.equal(result.payload.dispatchId, "dispatch-sendwait-busy");
   assert.equal(result.payload.dispatchStatus, "running");
+  assert.equal(result.payload.usageRole, "bridge");
+  assert.equal(result.payload.recommendedSurface, "thread_automation");
+  assert.equal(result.payload.recommendedPattern, "move_to_bound_thread");
   assert.match(result.text, /new message was not delivered/i);
   assert.match(result.text, /dispatch-sendwait-busy/);
+  assert.match(result.text, /Recommended surface: thread_automation/);
 });
 
 test("processAsyncDispatchWithSession completes async dispatches and auto-delivers callbacks", async (t) => {
@@ -559,6 +573,179 @@ test("processAsyncDispatchWithSession completes async dispatches and auto-delive
   assert.equal(status.payload.dispatchStatus, "succeeded");
   assert.equal(status.payload.callbackStatus, "delivered");
   assert.equal(status.payload.replyText, "relay async ok");
+  assert.equal(status.payload.usageRole, "bridge");
+  assert.equal(status.payload.recommendedSurface, "async_relay");
+  assert.equal(status.payload.recommendedPattern, "status_then_recover");
+});
+
+test("dispatchStatusAction live-refreshes a running dispatch to succeeded when the recorded turn already completed", async (t) => {
+  await withRelayHome(t);
+
+  await createDispatchRecord({
+    dispatchId: "dispatch-status-live-success",
+    projectId: "C:\\Trusted\\Relay",
+    threadId: "target-thread",
+    threadName: "relay target",
+    message: "Reply exactly relay async ok",
+    timeoutSec: 30,
+    created: false,
+    resolution: "by_thread_id",
+    callbackThreadId: null,
+    callbackStatus: "not_requested",
+    dispatchStatus: "running",
+    turnId: "turn-status-success-1",
+    createdAt: "2026-04-13T00:00:00.000Z",
+    acceptedAt: "2026-04-13T00:00:00.000Z",
+    updatedAt: "2026-04-13T00:00:05.000Z",
+  });
+
+  const status = await dispatchStatusAction({
+    request: async (method, params) => {
+      assert.equal(method, "thread/read");
+      assert.equal(params.threadId, "target-thread");
+      return {
+        result: {
+          thread: {
+            turns: [
+              {
+                id: "turn-status-success-1",
+                status: "completed",
+                completedAt: "2026-04-13T00:00:09.000Z",
+                items: [
+                  {
+                    id: "item-status-success-1",
+                    type: "agentMessage",
+                    phase: "final_answer",
+                    text: "relay status refreshed",
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      };
+    },
+    requestTimeoutMs: 1_000,
+  }, {
+    dispatchId: "dispatch-status-live-success",
+  });
+
+  assert.equal(status.payload.dispatchStatus, "succeeded");
+  assert.equal(status.payload.replyText, "relay status refreshed");
+
+  const stored = await getDispatchRecord("dispatch-status-live-success");
+  assert.equal(stored?.dispatchStatus, "succeeded");
+  assert.equal(stored?.replyText, "relay status refreshed");
+});
+
+test("dispatchStatusAction live-refreshes a running dispatch to failed when the recorded turn was interrupted", async (t) => {
+  await withRelayHome(t);
+
+  await createDispatchRecord({
+    dispatchId: "dispatch-status-live-failed",
+    projectId: "C:\\Trusted\\Relay",
+    threadId: "target-thread",
+    threadName: "relay target",
+    message: "Reply exactly relay async ok",
+    timeoutSec: 30,
+    created: false,
+    resolution: "by_thread_id",
+    callbackThreadId: null,
+    callbackStatus: "not_requested",
+    dispatchStatus: "running",
+    turnId: "turn-status-failed-1",
+    createdAt: "2026-04-13T00:00:00.000Z",
+    acceptedAt: "2026-04-13T00:00:00.000Z",
+    updatedAt: "2026-04-13T00:00:05.000Z",
+  });
+
+  const status = await dispatchStatusAction({
+    request: async (method, params) => {
+      assert.equal(method, "thread/read");
+      assert.equal(params.threadId, "target-thread");
+      return {
+        result: {
+          thread: {
+            turns: [
+              {
+                id: "turn-status-failed-1",
+                status: "interrupted",
+                completedAt: "2026-04-13T00:00:09.000Z",
+                error: {
+                  message: "Interrupted by operator",
+                },
+                items: [],
+              },
+            ],
+          },
+        },
+      };
+    },
+    requestTimeoutMs: 1_000,
+  }, {
+    dispatchId: "dispatch-status-live-failed",
+  });
+
+  assert.equal(status.payload.dispatchStatus, "failed");
+  assert.equal(status.payload.errorCode, "target_turn_failed");
+  assert.match(status.payload.errorMessage ?? "", /Interrupted by operator/);
+
+  const stored = await getDispatchRecord("dispatch-status-live-failed");
+  assert.equal(stored?.dispatchStatus, "failed");
+  assert.equal(stored?.errorCode, "target_turn_failed");
+});
+
+test("dispatchStatusAction drops a stale dead-worker lease and exposes the dispatch as resumable", async (t) => {
+  const relayHome = await withRelayHome(t);
+
+  await createDispatchRecord({
+    dispatchId: "dispatch-status-stale-worker",
+    projectId: "C:\\Trusted\\Relay",
+    threadId: "target-thread",
+    threadName: "relay target",
+    message: "Reply exactly relay async ok",
+    timeoutSec: 30,
+    created: false,
+    resolution: "by_thread_id",
+    callbackThreadId: null,
+    callbackStatus: "not_requested",
+    dispatchStatus: "running",
+    turnId: "turn-status-stale-worker-1",
+    createdAt: "2026-04-13T00:00:00.000Z",
+    acceptedAt: "2026-04-13T00:00:00.000Z",
+    updatedAt: "2026-04-13T00:00:05.000Z",
+  });
+
+  await acquireDispatchLease({
+    dispatchId: "dispatch-status-stale-worker",
+    ttlMs: 60_000,
+  });
+
+  const impossiblePid = 999_999_999;
+  const statePath = relayStatePath();
+  const lockPath = path.join(
+    relayHome,
+    "locks",
+    `dispatch-${Buffer.from("dispatch-status-stale-worker").toString("base64url")}.lease.json`,
+  );
+  const state = JSON.parse(await fs.readFile(statePath, "utf8"));
+  state.dispatchLeases = state.dispatchLeases.map((entry) =>
+    entry.dispatchId === "dispatch-status-stale-worker"
+      ? { ...entry, ownerPid: impossiblePid }
+      : entry);
+  await fs.writeFile(statePath, JSON.stringify(state, null, 2), "utf8");
+
+  const fileLease = JSON.parse(await fs.readFile(lockPath, "utf8"));
+  fileLease.ownerPid = impossiblePid;
+  await fs.writeFile(lockPath, JSON.stringify(fileLease, null, 2), "utf8");
+
+  const status = await dispatchStatusAction({
+    dispatchId: "dispatch-status-stale-worker",
+  });
+
+  assert.equal(status.payload.dispatchLeaseActive, false);
+  assert.equal(status.payload.recoverySuggested, "resume_turn_wait");
+  assert.match(status.payload.warning ?? "", /can be resumed/i);
 });
 
 test("processAsyncDispatchWithSession resumes a running recovery dispatch for a previously timed out sync turn", async (t) => {
@@ -735,6 +922,96 @@ test("processAsyncDispatchWithSession resumes a recorded target turn without rep
   assert.equal(result.replyText, "relay async resumed");
 });
 
+test("processAsyncDispatchWithSession marks a recorded interrupted turn as failed and clears the stale lease", async (t) => {
+  await withRelayHome(t);
+
+  await createDispatchRecord({
+    dispatchId: "dispatch-resume-interrupted",
+    projectId: "C:\\Trusted\\Relay",
+    threadId: "target-thread",
+    threadName: "relay target",
+    message: "Reply exactly relay async resume",
+    timeoutSec: 30,
+    created: false,
+    resolution: "by_thread_id",
+    callbackThreadId: null,
+    callbackStatus: "not_requested",
+    dispatchStatus: "running",
+    turnId: "turn-interrupted-1",
+    createdAt: "2026-04-13T00:00:00.000Z",
+    acceptedAt: "2026-04-13T00:00:00.000Z",
+    updatedAt: "2026-04-13T00:00:05.000Z",
+  });
+
+  await acquireThreadLease({
+    threadId: "target-thread",
+    projectId: "C:\\Trusted\\Relay",
+    ttlMs: 60_000,
+    turnId: "turn-interrupted-1",
+  });
+
+  const session = {
+    turnTimeoutMs: 90_000,
+    async request(method, params) {
+      if (method === "config/read") {
+        return {
+          result: {
+            config: {
+              projects: {
+                "C:\\Trusted\\Relay": {
+                  trust_level: "trusted",
+                },
+              },
+            },
+          },
+        };
+      }
+      if (method === "thread/read") {
+        return {
+          result: {
+            thread: {
+              id: params.threadId,
+              name: "relay target",
+              status: { type: "idle" },
+            },
+          },
+        };
+      }
+      throw new Error(`Unexpected request: ${method}`);
+    },
+    async listAllThreads() {
+      return [
+        {
+          id: "target-thread",
+          name: "relay target",
+          cwd: "C:\\Trusted\\Relay",
+          status: { type: "idle" },
+          updatedAt: 1_712_966_400,
+        },
+      ];
+    },
+    async waitForTurn(threadId, turnId) {
+      assert.equal(threadId, "target-thread");
+      assert.equal(turnId, "turn-interrupted-1");
+      return {
+        id: turnId,
+        status: "interrupted",
+        completedAt: "2026-04-13T00:00:10.000Z",
+        error: {
+          message: "Interrupted by operator",
+        },
+        items: [],
+      };
+    },
+  };
+
+  const result = await processAsyncDispatchWithSession(session, "dispatch-resume-interrupted");
+  assert.equal(result.dispatchStatus, "failed");
+  assert.equal(result.errorCode, "target_turn_failed");
+  assert.match(result.errorMessage ?? "", /Interrupted by operator/);
+  assert.equal(await getActiveThreadLease("target-thread"), null);
+});
+
 test("processAsyncDispatchWithSession waits for a recorded target turn using the session turn timeout floor", async (t) => {
   await withRelayHome(t);
 
@@ -845,6 +1122,9 @@ test("dispatchRecoverAction retries a failed callback delivery explicitly", asyn
 
   assert.equal(recovered.payload.recoveryAction, "retry_callback");
   assert.equal(recovered.payload.callbackStatus, "delivered");
+  assert.equal(recovered.payload.usageRole, "bridge");
+  assert.equal(recovered.payload.recommendedSurface, "async_relay");
+  assert.equal(recovered.payload.recommendedPattern, "status_then_recover");
 });
 
 test("dispatchRecoverAction resumes a timed out target turn when the turn id is known", async (t) => {
@@ -882,6 +1162,9 @@ test("dispatchRecoverAction resumes a timed out target turn when the turn id is 
   assert.equal(recovered.payload.dispatchStatus, "succeeded");
   assert.equal(recovered.payload.callbackStatus, "delivered");
   assert.equal(recovered.payload.replyText, "relay async recovered");
+  assert.equal(recovered.payload.usageRole, "bridge");
+  assert.equal(recovered.payload.recommendedSurface, "async_relay");
+  assert.equal(recovered.payload.recommendedPattern, "status_then_recover");
 });
 
 test("dispatchRecoverAction batch-recovers actionable dispatches", async (t) => {
@@ -936,6 +1219,9 @@ test("dispatchRecoverAction batch-recovers actionable dispatches", async (t) => 
 
   assert.equal(recovered.payload.recoveredCount, 2);
   assert.equal(recovered.payload.recovered.length, 2);
+  assert.equal(recovered.payload.usageRole, "bridge");
+  assert.equal(recovered.payload.recommendedSurface, "async_relay");
+  assert.equal(recovered.payload.recommendedPattern, "status_then_recover");
   assert.ok(recovered.payload.recovered.some((item) => item.dispatchId === "dispatch-batch-pending" && item.callbackStatus === "delivered"));
   assert.ok(recovered.payload.recovered.some((item) => item.dispatchId === "dispatch-batch-timeout" && item.dispatchStatus === "succeeded"));
 });

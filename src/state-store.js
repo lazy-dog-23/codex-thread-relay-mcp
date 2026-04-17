@@ -183,6 +183,29 @@ function normalizeDispatchLease(record) {
   };
 }
 
+function isLeaseOwnerAlive(ownerPid) {
+  if (!Number.isInteger(ownerPid) || ownerPid <= 0) {
+    return null;
+  }
+
+  if (ownerPid === process.pid) {
+    return true;
+  }
+
+  try {
+    process.kill(ownerPid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "EPERM") {
+      return true;
+    }
+    if (error?.code === "ESRCH") {
+      return false;
+    }
+    return true;
+  }
+}
+
 function normalizeState(value) {
   const createdThreads = Array.isArray(value?.createdThreads)
     ? value.createdThreads.map(normalizeCreatedThread).filter(Boolean)
@@ -396,17 +419,29 @@ async function cleanupExpiredThreadLease(threadId, now = Date.now()) {
 }
 
 async function cleanupExpiredDispatchLease(dispatchId, now = Date.now()) {
-  const existing = await readLeaseFile(dispatchLeaseFilePath(dispatchId), normalizeDispatchLease);
-  if (!existing) {
+  const filePath = dispatchLeaseFilePath(dispatchId);
+  const existing = await readLeaseFile(filePath, normalizeDispatchLease);
+  const state = await loadState();
+  const stateLease = state.dispatchLeases.find((lease) => lease.dispatchId === dispatchId) ?? null;
+  if (!existing && !stateLease) {
+    return;
+  }
+
+  if (!existing && stateLease) {
+    await updateState((current) => ({
+      ...current,
+      dispatchLeases: current.dispatchLeases.filter((lease) => lease.dispatchId !== dispatchId),
+    }));
     return;
   }
 
   const expiresAt = Date.parse(existing.expiresAt);
-  if (Number.isFinite(expiresAt) && expiresAt > now) {
+  const ownerAlive = isLeaseOwnerAlive(existing.ownerPid);
+  if (Number.isFinite(expiresAt) && expiresAt > now && ownerAlive !== false) {
     return;
   }
 
-  await removeLeaseFile(dispatchLeaseFilePath(dispatchId));
+  await removeLeaseFile(filePath);
   await updateState((state) => ({
     ...state,
     dispatchLeases: state.dispatchLeases.filter((lease) => lease.dispatchId !== dispatchId),
@@ -596,7 +631,23 @@ export async function getActiveDispatchLease(dispatchId) {
 
   await cleanupExpiredDispatchLease(normalizedDispatchId);
   const state = await loadState();
-  return state.dispatchLeases.find((item) => item.dispatchId === normalizedDispatchId) ?? null;
+  const stateLease = state.dispatchLeases.find((item) => item.dispatchId === normalizedDispatchId) ?? null;
+  const fileLease = await readLeaseFile(dispatchLeaseFilePath(normalizedDispatchId), normalizeDispatchLease);
+  if (!fileLease) {
+    return stateLease;
+  }
+  if (!stateLease) {
+    return fileLease;
+  }
+  if (stateLease.leaseId !== fileLease.leaseId) {
+    return fileLease;
+  }
+  return normalizeDispatchLease({
+    ...stateLease,
+    acquiredAt: fileLease.acquiredAt ?? stateLease.acquiredAt,
+    expiresAt: fileLease.expiresAt ?? stateLease.expiresAt,
+    ownerPid: fileLease.ownerPid ?? stateLease.ownerPid,
+  });
 }
 
 export async function updateDispatchRecord(dispatchId, mutator) {

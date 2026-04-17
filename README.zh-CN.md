@@ -4,7 +4,7 @@
 
 `codex-thread-relay-mcp` 的作用很直接：让一个 Codex App 线程把消息发到另一个线程，再把结果回传回来，支持跨项目、跨会话。
 
-这个仓库提供的就是这层线程通信能力：trusted project 查询、线程创建/复用、同步 dispatch、异步 callback、状态查询和恢复。
+这个仓库提供的是 bridge / recovery transport 这一层：trusted project 查询、线程创建/复用、异步 dispatch、状态查询、恢复、callback 回传，以及短同步探测。它不再承担“同线程自治主总线”的角色；当绑定线程本身就能持续推进时，应该优先使用官方 Codex thread automation。
 
 ## 它会和什么交互
 
@@ -68,7 +68,7 @@ THREAD_RELAY_CODEX_HOME = "<path-to-your-codex-home>"
 - 如果 Codex 里看不到 relay 工具，先检查 MCP 配置路径，再重启 Codex App。
 - 如果 `smoke` 很早就失败，先确认 Codex App 正在运行，并且目标项目已经被 Windows Codex App 标记为 trusted。
 - 如果 async callback 长时间停在 `pending`，先看源线程是否正忙，再使用 `relay_dispatch_deliver` 或 `relay_dispatch_recover`。
-- 如果 `relay_send_wait` 或同步 `relay_dispatch` 在长回合上超时，现在错误里会带 `recoveryDispatchId`。可以先用 `relay_dispatch_status` 看后台进度，再用 `relay_dispatch_recover` 显式续等；长自治流程仍然优先用 `relay_dispatch_async`。
+- 如果 `relay_send_wait` 或同步 `relay_dispatch` 在长回合上超时，现在错误里会带 `recoveryDispatchId` 和 bridge advisory 字段。可以先用 `relay_dispatch_status` 看后台进度，再用 `relay_dispatch_recover` 显式续等；长 relay 流程优先 `relay_dispatch_async`，同线程持续自治优先官方 thread automation。
 
 ## 近期验证结论（2026-04-14）
 
@@ -91,17 +91,28 @@ THREAD_RELAY_CODEX_HOME = "<path-to-your-codex-home>"
 
 结论更具体了：在真实线程上，`长回合 -> send_wait 超时 -> dispatch_status 成功收口 -> 后续消息继续可发` 已经跑通。剩余未在这次会话里实测的，只是系统级 `Task Scheduler` 唤醒层；当前受限环境无法注册 Windows 计划任务，也不允许 runner 再起一个新的 app-server 子进程，因此未在同一会话里完成系统调度层验收。
 
+## 近期验证结论（2026-04-17）
+
+继续在真实绑定线程上做了官方 heartbeat live acceptance，用来区分“relay 恢复链”与“官方 thread automation runtime”：
+
+1. 先尝试通过 relay 让绑定线程自己创建 same-thread heartbeat，这条 setup turn 最终被收口成 `target_turn_failed / interrupted`，没有创建出 automation。
+2. 为了排除目标线程被打断的干扰，再直接用 app 创建临时 heartbeat `bilimusic2-official-hb-live-test-20260417-1430`，目标仍是同一个绑定线程。
+3. 这条 heartbeat 会进入 `ACTIVE`，TOML 与 SQLite 行都存在，`last_run_at` / `next_run_at` 也会推进。
+4. 但目标线程没有任何新 turn，`automation_runs` 仍然是 `0`，测试 marker 也没有出现在线程里。
+
+结论：relay 这一层现在已经足够承担 bridge / recovery transport，但这台机器上的官方 heartbeat runtime 仍然可能出现“时间在滚动，但没有真正投递执行”的 live 问题。也因此，当前机器上的同线程持续推进，仍然要把 relay / external scheduler fallback 视为实际可运行路径。
+
 ## 公开工具
 
 - `relay_list_projects()`
 - `relay_list_threads({ projectId, query? })`
 - `relay_create_thread({ projectId, name? })`
-- `relay_send_wait({ threadId, message, timeoutSec? })`
-- `relay_dispatch({ projectId, message, threadId?, threadName?, query?, createIfMissing?, timeoutSec? })`
 - `relay_dispatch_async({ projectId, message, threadId?, threadName?, query?, createIfMissing?, callbackThreadId?, timeoutSec? })`
 - `relay_dispatch_status({ dispatchId })`
-- `relay_dispatch_deliver({ dispatchId, callbackThreadId? })`
 - `relay_dispatch_recover({ dispatchId?, projectId?, callbackThreadId?, limit? })`
+- `relay_send_wait({ threadId, message, timeoutSec? })`
+- `relay_dispatch({ projectId, message, threadId?, threadName?, query?, createIfMissing?, timeoutSec? })`
+- `relay_dispatch_deliver({ dispatchId, callbackThreadId? })`
 
 `relay_dispatch` 的解析顺序固定为：
 
@@ -116,9 +127,10 @@ THREAD_RELAY_CODEX_HOME = "<path-to-your-codex-home>"
 
 ```powershell
 node src/cli.js relay_list_projects --json
-node src/cli.js relay_send_wait --thread-id <thread-id> --message-file .\prompt.md --timeout-sec 45 --json
+node src/cli.js relay_dispatch_async --project-id <project-id> --thread-id <thread-id> --message-file .\prompt.md --timeout-sec 300 --json
 node src/cli.js relay_dispatch_status --dispatch-id <dispatch-id> --json
 node src/cli.js relay_dispatch_recover --dispatch-id <dispatch-id> --json
+node src/cli.js relay_send_wait --thread-id <thread-id> --message-file .\probe.md --timeout-sec 45 --json
 ```
 
 CLI 的语义和 MCP 工具保持一致：
@@ -128,7 +140,7 @@ CLI 的语义和 MCP 工具保持一致：
 - 长 prompt 通过 `--message-file` 传入，不需要把大段文本塞进命令行
 - 不依赖一次 LLM turn 替你调用 MCP 工具
 
-这就是 `Task Scheduler -> relay -> 绑定线程` 这条链路的公开触发入口。
+这就是 `Task Scheduler -> relay -> 绑定线程` 这条 fallback bridge 链路的公开触发入口。若工作始终停留在同一个已绑定项目线程内，官方 Codex thread automation 仍然是架构优先面；但在这台机器的当前 live 验收里，它还没有稳定到可以替代 relay fallback。
 
 ## 错误模型
 
@@ -209,11 +221,12 @@ npm run audit:official
 
 ## 示例流程
 
-1. 调用 `relay_list_projects`
-2. 选择一个 trusted target project
-3. 先用 `relay_dispatch` 走最短 happy path
-4. 需要更细粒度控制时，再退回 `relay_list_threads` / `relay_create_thread` / `relay_send_wait`
-5. 异步场景用 `relay_dispatch_status` 轮询；callback 投递或 worker 进度需要显式恢复时，使用 `relay_dispatch_recover`；不给 `dispatchId` 时可以按单个项目批量扫 stale dispatch
+1. 如果工作本来就在同一个已绑定线程里持续推进，优先用官方 Codex thread automation，不要先走 relay。
+2. 调用 `relay_list_projects`
+3. 选择一个 trusted target project
+4. 长运行 delegated work 默认走 `relay_dispatch_async`
+5. 用 `relay_dispatch_status` 轮询；callback 投递或 worker 进度需要显式恢复时，使用 `relay_dispatch_recover`；不给 `dispatchId` 时可以按单个项目批量扫 stale dispatch
+6. `relay_send_wait` 和同步 `relay_dispatch` 只保留给短探测、短同步回包
 
 ## 当前版本范围限制
 
