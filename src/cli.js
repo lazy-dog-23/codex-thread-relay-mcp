@@ -88,6 +88,11 @@ function usageText(commands = CLI_COMMANDS) {
     "Usage:",
     "  node src/cli.js <command> [--json] [--params-file <file>] [--params-json <json>] [--message-file <file>] [command flags]",
     "",
+    "Decision guide:",
+    "  1. Same bound thread recurring work -> official Codex thread automation, not relay.",
+    "  2. Cross-thread, cross-project, or external wake-ups -> relay_dispatch_async -> relay_dispatch_status -> relay_dispatch_recover.",
+    "  3. Short synchronous probe only -> relay_send_wait or relay_dispatch.",
+    "",
     "Commands:",
     ...Object.keys(commands).map((name) => `  - ${name}`),
     "",
@@ -97,6 +102,9 @@ function usageText(commands = CLI_COMMANDS) {
     "  node src/cli.js relay_dispatch_status --dispatch-id <dispatch-id> --json",
     "  node src/cli.js relay_dispatch_recover --dispatch-id <dispatch-id> --json",
     "  node src/cli.js relay_send_wait --thread-id <thread-id> --message-file .\\probe.md --timeout-sec 45 --json",
+    "",
+    "JSON advisory fields:",
+    "  usageRole, recommendedSurface, recommendedPattern, whenToUse, whenNotToUse, selectionRule, nextActionSummary",
   ].join("\n");
 }
 

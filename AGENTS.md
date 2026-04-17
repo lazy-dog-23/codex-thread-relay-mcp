@@ -32,8 +32,8 @@
 
 - 原线程是唯一操作入口，`report_thread_id` 是所有摘要和异常回传的锚点。
 - 线程内的自然语言动作固定收口为：`把 auto 装进当前项目`、`目标是……`、`确认提案`、`用冲刺模式推进这个目标`、`用巡航模式推进这个目标`、`汇报当前情况`、`暂停当前目标`、`继续当前目标`、`处理下一个目标`、`合并自治分支`。
-- `汇报当前情况` 必须先运行 `codex-autonomy status`；只有明确要求详细结果时才运行 `codex-autonomy report`，并且以最终命令输出里的 `automation_state`、`ready_for_automation`、`next_automation_reason`、`report_thread_id`、`current_thread_id`、`thread_binding_state`、`thread_binding_hint` 为准。若状态里出现 `git_runtime_probe_deferred` 或 `background_runtime_probe_deferred`，还必须直接运行一次 `git status --short` 再判断真实 blocker。
-- `继续当前目标`、`处理下一个目标`、`用冲刺模式推进这个目标` 在执行前必须先运行 `codex-autonomy status`；如果 `ready_for_automation=false`，原样汇报 `next_automation_reason` 并停止，不得绕过控制面直接改代码。若状态里出现 `git_runtime_probe_deferred` 或 `background_runtime_probe_deferred`，还必须直接运行一次 `git status --short`，发现 unmanaged drift 就停止。
+- `汇报当前情况` 必须先运行 `codex-autonomy status`；只有明确要求详细结果时才运行 `codex-autonomy report`，并且以最终命令输出里的 `automation_state`、`ready_for_automation`、`ready_for_execution`、`goal_supply_state`、`next_automation_step`、`next_automation_reason`、`report_thread_id`、`current_thread_id`、`thread_binding_state`、`thread_binding_hint` 为准。若状态里出现 `git_runtime_probe_deferred` 或 `background_runtime_probe_deferred`，还必须直接运行一次 `git status --short` 再判断真实 blocker。
+- `继续当前目标`、`处理下一个目标`、`用冲刺模式推进这个目标` 在执行前必须先运行 `codex-autonomy status`；如果 `ready_for_automation=false`，原样汇报 `next_automation_reason` 并停止；如果 `ready_for_execution=false`，则严格按 `next_automation_step` 收口：`plan_or_rebalance` 只做一轮规划/收口，`await_confirmation` 只汇报待确认并停止，只有 `execute_bounded_loop` 才能进入业务代码闭环。若状态里出现 `git_runtime_probe_deferred` 或 `background_runtime_probe_deferred`，还必须直接运行一次 `git status --short`，发现 unmanaged drift 就停止。
 - 如果 `thread_binding_state=bound_to_other`，当前线程不是 operator thread；必须明确报告 mismatch 并停止，不得静默沿用旧 `report_thread_id` 继续。
 - `goal.md` 只镜像当前 active goal；真正的目标队列和批准边界以 `goals.json`、`proposals.json`、`tasks.json` 为准。
 

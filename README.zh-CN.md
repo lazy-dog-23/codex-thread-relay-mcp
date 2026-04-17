@@ -66,6 +66,7 @@ THREAD_RELAY_CODEX_HOME = "<path-to-your-codex-home>"
 ## 常见问题
 
 - 如果 Codex 里看不到 relay 工具，先检查 MCP 配置路径，再重启 Codex App。
+- 如果更新后 relay 或官方 thread automation 还表现得像旧版本，先重启 Codex App，让 MCP server 和 automation runtime 真正重载到新代码路径。
 - 如果 `smoke` 很早就失败，先确认 Codex App 正在运行，并且目标项目已经被 Windows Codex App 标记为 trusted。
 - 如果 async callback 长时间停在 `pending`，先看源线程是否正忙，再使用 `relay_dispatch_deliver` 或 `relay_dispatch_recover`。
 - 如果 `relay_send_wait` 或同步 `relay_dispatch` 在长回合上超时，现在错误里会带 `recoveryDispatchId` 和 bridge advisory 字段。可以先用 `relay_dispatch_status` 看后台进度，再用 `relay_dispatch_recover` 显式续等；长 relay 流程优先 `relay_dispatch_async`，同线程持续自治优先官方 thread automation。
@@ -93,14 +94,13 @@ THREAD_RELAY_CODEX_HOME = "<path-to-your-codex-home>"
 
 ## 近期验证结论（2026-04-17）
 
-继续在真实绑定线程上做了官方 heartbeat live acceptance，用来区分“relay 恢复链”与“官方 thread automation runtime”：
+后续 live 复验把“旧运行时样本”与当前 26.415 的真实工作路径分开了：
 
-1. 先尝试通过 relay 让绑定线程自己创建 same-thread heartbeat，这条 setup turn 最终被收口成 `target_turn_failed / interrupted`，没有创建出 automation。
-2. 为了排除目标线程被打断的干扰，再直接用 app 创建临时 heartbeat `bilimusic2-official-hb-live-test-20260417-1430`，目标仍是同一个绑定线程。
-3. 这条 heartbeat 会进入 `ACTIVE`，TOML 与 SQLite 行都存在，`last_run_at` / `next_run_at` 也会推进。
-4. 但目标线程没有任何新 turn，`automation_runs` 仍然是 `0`，测试 marker 也没有出现在线程里。
+1. 这台机器上早先那次 same-thread heartbeat 样本，确实像 stale runtime：时间在推进，但没有新 turn。
+2. 在重启 Codex App、让 MCP 与 automation runtime 真正重载最新代码后，同一个绑定线程上的官方 heartbeat 又能重新产出新 turn。
+3. 这也把分工重新说清楚了：官方 thread automation 是同线程持续推进主路，relay 继续专注在跨线程、跨项目、外部唤醒时的 bridge / recovery transport。
 
-结论：relay 这一层现在已经足够承担 bridge / recovery transport，但这台机器上的官方 heartbeat runtime 仍然可能出现“时间在滚动，但没有真正投递执行”的 live 问题。也因此，当前机器上的同线程持续推进，仍然要把 relay / external scheduler fallback 视为实际可运行路径。
+结论：不要再把 relay 当成默认同线程控制总线。只要工作可以留在已绑定线程里持续推进，就优先官方 thread automation；relay 保持 transport、status、recover 这一层。
 
 ## 公开工具
 
@@ -137,10 +137,11 @@ CLI 的语义和 MCP 工具保持一致：
 
 - 复用同一套 durable dispatch、lease、busy、timeout 和 recover 语义
 - 开启 `--json` 时，输出稳定机读 JSON：`ok`、`command`、`payload` 以及错误元数据
+- JSON 里还会带 bridge advisory 字段：`usageRole`、`recommendedSurface`、`recommendedPattern`、`whenToUse`、`whenNotToUse`、`selectionRule`、`nextActionSummary`
 - 长 prompt 通过 `--message-file` 传入，不需要把大段文本塞进命令行
 - 不依赖一次 LLM turn 替你调用 MCP 工具
 
-这就是 `Task Scheduler -> relay -> 绑定线程` 这条 fallback bridge 链路的公开触发入口。若工作始终停留在同一个已绑定项目线程内，官方 Codex thread automation 仍然是架构优先面；但在这台机器的当前 live 验收里，它还没有稳定到可以替代 relay fallback。
+这就是 `Task Scheduler -> relay -> 绑定线程` 这条 fallback bridge 链路的公开触发入口。若工作始终停留在同一个已绑定项目线程内，官方 Codex thread automation 是主路；relay 保留给必须从线程外部发起的 bridge / recovery 场景。
 
 ## 错误模型
 
@@ -219,14 +220,12 @@ npm run audit:official
 - `soak`: 更长时间的 async callback 与恢复压力测试
 - `audit:official`: 强制走官方 npm registry 做依赖审计
 
-## 示例流程
+## Agent 决策指引
 
-1. 如果工作本来就在同一个已绑定线程里持续推进，优先用官方 Codex thread automation，不要先走 relay。
-2. 调用 `relay_list_projects`
-3. 选择一个 trusted target project
-4. 长运行 delegated work 默认走 `relay_dispatch_async`
-5. 用 `relay_dispatch_status` 轮询；callback 投递或 worker 进度需要显式恢复时，使用 `relay_dispatch_recover`；不给 `dispatchId` 时可以按单个项目批量扫 stale dispatch
-6. `relay_send_wait` 和同步 `relay_dispatch` 只保留给短探测、短同步回包
+1. 同一个已绑定线程里的持续工作：优先官方 Codex thread automation，不走 relay。
+2. 跨线程、跨项目、外部唤醒：默认走 `relay_dispatch_async`。
+3. 已有 dispatch 后出现 timeout / busy：先 `relay_dispatch_status`，只有确实还要显式恢复时再 `relay_dispatch_recover`。
+4. 只是做短探测或短同步回包：再用 `relay_send_wait` 或同步 `relay_dispatch`。
 
 ## 当前版本范围限制
 

@@ -140,6 +140,10 @@ test("main prints json error payloads with relay metadata", async () => {
               usageRole: "bridge",
               recommendedSurface: "thread_automation",
               recommendedPattern: "move_to_bound_thread",
+              whenToUse: "Use official thread automation when the work should continue inside the same bound project thread and preserve thread context.",
+              whenNotToUse: "Do not keep routing recurring same-thread work through relay when the bound thread can wake itself directly.",
+              selectionRule: "Choose this pattern when the relay request revealed that the real work belongs on the bound thread or an existing active dispatch.",
+              nextActionSummary: "Move the recurring work to the bound thread, or inspect and recover the active dispatch before sending anything else.",
             });
           },
         },
@@ -158,6 +162,10 @@ test("main prints json error payloads with relay metadata", async () => {
   assert.equal(parsed.details.usageRole, "bridge");
   assert.equal(parsed.details.recommendedSurface, "thread_automation");
   assert.equal(parsed.details.recommendedPattern, "move_to_bound_thread");
+  assert.match(parsed.details.whenToUse, /official thread automation/i);
+  assert.match(parsed.details.whenNotToUse, /same-thread work through relay/i);
+  assert.match(parsed.details.selectionRule, /bound thread or an existing active dispatch/i);
+  assert.match(parsed.details.nextActionSummary, /Move the recurring work to the bound thread/i);
 });
 
 test("main help output prefers async/status/recover before send_wait examples", async () => {
@@ -170,6 +178,8 @@ test("main help output prefers async/status/recover before send_wait examples", 
   assert.equal(stderr.read(), "");
   const output = stdout.read();
   assert.ok(output.indexOf("relay_dispatch_async") < output.indexOf("relay_send_wait"));
+  assert.match(output, /Same bound thread recurring work -> official Codex thread automation, not relay\./);
+  assert.match(output, /usageRole, recommendedSurface, recommendedPattern, whenToUse, whenNotToUse, selectionRule, nextActionSummary/);
   assert.match(output, /relay_dispatch_async --project-id <project-id>/);
   assert.match(output, /relay_dispatch_status --dispatch-id <dispatch-id>/);
   assert.match(output, /relay_dispatch_recover --dispatch-id <dispatch-id>/);

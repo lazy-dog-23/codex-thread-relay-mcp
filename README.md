@@ -67,6 +67,7 @@ Replace the example path values before using the config, then restart the Codex 
 
 - If the relay tools do not appear in Codex, check the MCP config path and restart the Codex App.
 - If `smoke` fails early, confirm the Codex App is running and the target project is already trusted by the Windows Codex App.
+- If relay or official thread automation keeps behaving like an older build after an update, restart the Codex App so the MCP server and automation runtime reload the new code paths.
 - If async callback delivery stays `pending`, check whether the source thread is busy, then use `relay_dispatch_deliver` or `relay_dispatch_recover`.
 - If `relay_send_wait` or synchronous `relay_dispatch` times out on a long target turn, the timeout now includes a `recoveryDispatchId` plus bridge advisory fields. Use `relay_dispatch_status` to inspect progress, `relay_dispatch_recover` to resume waiting explicitly, prefer `relay_dispatch_async` for long-running relay work, and prefer official thread automations for same-thread recurring autonomy loops.
 
@@ -93,14 +94,13 @@ That makes the recovery claim more concrete: on a real thread, `long turn -> sen
 
 ## Recent Validation (2026-04-17)
 
-The next live check separated the relay recovery layer from the official thread-automation runtime on the same bound thread:
+The later live check separated a stale runtime sample from the current 26.415 operating path on the same bound thread:
 
-1. First, relay was used to ask the bound thread to create its own same-thread heartbeat. That setup turn closed as `target_turn_failed / interrupted` and did not create an automation.
-2. To remove relay from the equation, a temporary heartbeat `bilimusic2-official-hb-live-test-20260417-1430` was then created directly in the app against the same bound thread.
-3. The heartbeat became `ACTIVE`; the automation TOML and SQLite row existed, and `last_run_at` / `next_run_at` advanced.
-4. But the target thread produced no new turn, `automation_runs` remained `0`, and the test marker never appeared in the thread.
+1. An earlier same-thread heartbeat sample on this machine had behaved like a stale runtime: timing advanced without a new turn.
+2. After restarting the Codex App and reloading the updated MCP/runtime code, the same bound-thread heartbeat path produced new in-thread turns again.
+3. That confirms the intended split: official thread automation is the primary same-thread continuation surface, while relay remains the bridge and recovery layer for cross-thread, cross-project, or external wake-ups.
 
-Outcome: the relay bridge/recovery layer is now good enough to serve as the operational fallback, but the official heartbeat runtime on this Windows machine still reproduces the “time advances without a real dispatch” failure mode.
+Outcome: do not treat relay as the default same-thread control bus. Use official thread automation when the bound thread can keep working in place; keep relay focused on transport, status, and recovery.
 
 ## Public Tools
 
@@ -137,10 +137,11 @@ CLI behavior:
 
 - uses the same durable dispatch, lease, busy, timeout, and recovery semantics as the MCP tools
 - returns machine-readable JSON with `ok`, `command`, `payload`, and relay error metadata when `--json` is set
+- includes bridge advisory fields such as `usageRole`, `recommendedSurface`, `recommendedPattern`, `whenToUse`, `whenNotToUse`, `selectionRule`, and `nextActionSummary`
 - accepts long prompts through `--message-file`
 - does not depend on an LLM turn to call MCP tools on its behalf
 
-This is the supported fallback building block for `Task Scheduler -> relay -> bound thread` chains. When the work stays on one already-bound project thread, official Codex thread automations remain the architecture-first surface, but on this machine's current live validation they are not yet stable enough to replace the relay fallback.
+This is the supported fallback building block for `Task Scheduler -> relay -> bound thread` chains. When the work stays on one already-bound project thread, official Codex thread automations are the primary surface; relay is the supported bridge and recovery fallback when the wake-up must start outside that thread.
 
 ## Error Model
 
@@ -228,14 +229,12 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1
 - `soak`: longer async callback and recovery pressure runs
 - `audit:official`: dependency audit against the official npm registry
 
-## Example Flow
+## Agent Decision Guide
 
-1. If the work can stay on the same bound thread, use official Codex thread automations instead of relay.
-2. Call `relay_list_projects`
-3. Pick a trusted target project
-4. Use `relay_dispatch_async` as the default relay path for long-running delegated work.
-5. Use `relay_dispatch_status` for polling and `relay_dispatch_recover` when callback delivery or worker progress needs explicit recovery; omit `dispatchId` to batch-sweep stale dispatches for one project.
-6. Keep `relay_send_wait` or synchronous `relay_dispatch` for short probes and short sync replies.
+1. Same bound thread recurring work: use official Codex thread automations, not relay.
+2. Cross-thread, cross-project, or external wake-up: use `relay_dispatch_async` as the default bridge path.
+3. Timeout or busy after a dispatch already exists: use `relay_dispatch_status` first, then `relay_dispatch_recover` only when explicit recovery is still needed.
+4. Short synchronous probe only: use `relay_send_wait` or synchronous `relay_dispatch`.
 
 ## Scope Limits In This Version
 

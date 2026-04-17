@@ -353,6 +353,10 @@ test("deliverMessageToThread records a recoverable dispatch for sync timeout whe
   assert.equal(thrown.details.usageRole, "bridge");
   assert.equal(thrown.details.recommendedSurface, "thread_automation");
   assert.equal(thrown.details.recommendedPattern, "status_then_recover");
+  assert.match(thrown.details.whenToUse, /official thread automation/i);
+  assert.match(thrown.details.whenNotToUse, /same-thread work through relay/i);
+  assert.match(thrown.details.selectionRule, /dispatch already exists/i);
+  assert.match(thrown.details.nextActionSummary, /Check relay_dispatch_status first/i);
   assert.deepEqual(scheduledDispatches, [thrown.details.recoveryDispatchId]);
 
   const recoveryRecord = await getDispatchRecord(thrown.details.recoveryDispatchId);
@@ -431,6 +435,8 @@ test("deliverMessageToThread surfaces the active recovery dispatch id when the t
       assert.equal(error.details.usageRole, "bridge");
       assert.equal(error.details.recommendedSurface, "thread_automation");
       assert.equal(error.details.recommendedPattern, "move_to_bound_thread");
+      assert.match(error.details.whenToUse, /official thread automation/i);
+      assert.match(error.details.nextActionSummary, /Move the recurring work to the bound thread/i);
       assert.match(error.message, /dispatch-active-recovery/);
       assert.match(error.message, /relay_dispatch_status/);
       assert.match(error.message, /official Codex thread automations/i);
@@ -526,6 +532,8 @@ test("sendWaitAction returns active dispatch status instead of target_busy when 
   assert.equal(result.payload.usageRole, "bridge");
   assert.equal(result.payload.recommendedSurface, "thread_automation");
   assert.equal(result.payload.recommendedPattern, "move_to_bound_thread");
+  assert.match(result.payload.whenToUse, /official thread automation/i);
+  assert.match(result.payload.nextActionSummary, /Move the recurring work to the bound thread/i);
   assert.match(result.text, /new message was not delivered/i);
   assert.match(result.text, /dispatch-sendwait-busy/);
   assert.match(result.text, /Recommended surface: thread_automation/);
@@ -576,6 +584,8 @@ test("processAsyncDispatchWithSession completes async dispatches and auto-delive
   assert.equal(status.payload.usageRole, "bridge");
   assert.equal(status.payload.recommendedSurface, "async_relay");
   assert.equal(status.payload.recommendedPattern, "status_then_recover");
+  assert.match(status.payload.whenToUse, /cross threads or projects/i);
+  assert.match(status.payload.nextActionSummary, /Check relay_dispatch_status first/i);
 });
 
 test("dispatchStatusAction live-refreshes a running dispatch to succeeded when the recorded turn already completed", async (t) => {
@@ -1125,6 +1135,8 @@ test("dispatchRecoverAction retries a failed callback delivery explicitly", asyn
   assert.equal(recovered.payload.usageRole, "bridge");
   assert.equal(recovered.payload.recommendedSurface, "async_relay");
   assert.equal(recovered.payload.recommendedPattern, "status_then_recover");
+  assert.match(recovered.payload.whenToUse, /cross threads or projects/i);
+  assert.match(recovered.payload.nextActionSummary, /Check relay_dispatch_status first/i);
 });
 
 test("dispatchRecoverAction resumes a timed out target turn when the turn id is known", async (t) => {
@@ -1165,6 +1177,8 @@ test("dispatchRecoverAction resumes a timed out target turn when the turn id is 
   assert.equal(recovered.payload.usageRole, "bridge");
   assert.equal(recovered.payload.recommendedSurface, "async_relay");
   assert.equal(recovered.payload.recommendedPattern, "status_then_recover");
+  assert.match(recovered.payload.whenToUse, /cross threads or projects/i);
+  assert.match(recovered.payload.nextActionSummary, /Check relay_dispatch_status first/i);
 });
 
 test("dispatchRecoverAction batch-recovers actionable dispatches", async (t) => {
@@ -1222,6 +1236,8 @@ test("dispatchRecoverAction batch-recovers actionable dispatches", async (t) => 
   assert.equal(recovered.payload.usageRole, "bridge");
   assert.equal(recovered.payload.recommendedSurface, "async_relay");
   assert.equal(recovered.payload.recommendedPattern, "status_then_recover");
+  assert.match(recovered.payload.whenToUse, /cross threads or projects/i);
+  assert.match(recovered.payload.nextActionSummary, /Check relay_dispatch_status first/i);
   assert.ok(recovered.payload.recovered.some((item) => item.dispatchId === "dispatch-batch-pending" && item.callbackStatus === "delivered"));
   assert.ok(recovered.payload.recovered.some((item) => item.dispatchId === "dispatch-batch-timeout" && item.dispatchStatus === "succeeded"));
 });

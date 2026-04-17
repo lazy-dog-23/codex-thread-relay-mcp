@@ -40,6 +40,46 @@ const CALLBACK_EVENT_JSON_END = "END_CODEX_RELAY_CALLBACK_JSON";
 const CALLBACK_PENDING_RETRY_DELAYS_MS = [3_000, 7_000, 15_000];
 const RELAY_USAGE_ROLE = "bridge";
 
+function relaySurfaceWhenToUse(surface) {
+  if (surface === "thread_automation") {
+    return "Use official thread automation when the work should continue inside the same bound project thread and preserve thread context.";
+  }
+  if (surface === "async_relay") {
+    return "Use async relay when the wake-up must cross threads or projects, come from an external scheduler, or otherwise cannot start inside the bound thread.";
+  }
+  return "Use manual relay only for one-off inspection, debugging, or operator-driven recovery.";
+}
+
+function relaySurfaceWhenNotToUse(surface) {
+  if (surface === "thread_automation") {
+    return "Do not keep routing recurring same-thread work through relay when the bound thread can wake itself directly.";
+  }
+  if (surface === "async_relay") {
+    return "Do not use async relay as the default for same-thread recurring work that already belongs on the bound thread.";
+  }
+  return "Do not use manual relay as a substitute for durable async dispatch or bound-thread automation.";
+}
+
+function relayPatternSelectionRule(pattern) {
+  if (pattern === "async_dispatch") {
+    return "Choose this pattern when you are starting fresh long-running bridge work and need a durable dispatch record.";
+  }
+  if (pattern === "move_to_bound_thread") {
+    return "Choose this pattern when the relay request revealed that the real work belongs on the bound thread or an existing active dispatch.";
+  }
+  return "Choose this pattern when a dispatch already exists and you need to inspect status before deciding whether recovery is still necessary.";
+}
+
+function relayPatternNextAction(pattern) {
+  if (pattern === "async_dispatch") {
+    return "Enqueue with relay_dispatch_async, then observe progress with relay_dispatch_status.";
+  }
+  if (pattern === "move_to_bound_thread") {
+    return "Move the recurring work to the bound thread, or inspect and recover the active dispatch before sending anything else.";
+  }
+  return "Check relay_dispatch_status first, then use relay_dispatch_recover only when the dispatch still needs explicit recovery.";
+}
+
 function buildRelayAdvisory({
   recommendedSurface = "async_relay",
   recommendedPattern = "status_then_recover",
@@ -48,27 +88,11 @@ function buildRelayAdvisory({
     usageRole: RELAY_USAGE_ROLE,
     recommendedSurface,
     recommendedPattern,
+    whenToUse: relaySurfaceWhenToUse(recommendedSurface),
+    whenNotToUse: relaySurfaceWhenNotToUse(recommendedSurface),
+    selectionRule: relayPatternSelectionRule(recommendedPattern),
+    nextActionSummary: relayPatternNextAction(recommendedPattern),
   };
-}
-
-function relaySurfaceAdvice(surface) {
-  if (surface === "thread_automation") {
-    return "For same-thread recurring work, prefer official Codex thread automations and keep relay as bridge/recovery transport.";
-  }
-  if (surface === "async_relay") {
-    return "For long-running relay work, prefer relay_dispatch_async with durable status/recover follow-up instead of long synchronous waits.";
-  }
-  return "Use relay manually only when neither bound-thread automation nor async relay dispatch is the right fit.";
-}
-
-function relayPatternAdvice(pattern) {
-  if (pattern === "async_dispatch") {
-    return "Recommended next step: enqueue with relay_dispatch_async, then observe via relay_dispatch_status.";
-  }
-  if (pattern === "move_to_bound_thread") {
-    return "Recommended next step: continue from the bound thread or poll/recover the active dispatch before sending more relay work.";
-  }
-  return "Recommended next step: check relay_dispatch_status first, then use relay_dispatch_recover only when the dispatch still needs explicit recovery.";
 }
 
 function formatRelayAdvisoryLines(payload) {
@@ -80,8 +104,10 @@ function formatRelayAdvisoryLines(payload) {
     `Usage role: ${payload.usageRole}.`,
     `Recommended surface: ${payload.recommendedSurface}.`,
     `Recommended pattern: ${payload.recommendedPattern}.`,
-    relaySurfaceAdvice(payload.recommendedSurface),
-    relayPatternAdvice(payload.recommendedPattern),
+    payload.whenToUse ? `When to use: ${payload.whenToUse}` : null,
+    payload.whenNotToUse ? `When not to use: ${payload.whenNotToUse}` : null,
+    payload.selectionRule ? `Selection rule: ${payload.selectionRule}` : null,
+    payload.nextActionSummary ? `Recommended next step: ${payload.nextActionSummary}` : null,
   ].filter(Boolean);
 }
 
