@@ -30,6 +30,18 @@ const CLI_COMMANDS = {
     requiresSession: true,
     handler: (session, params) => createThreadAction(session, params),
   },
+  relay_dispatch_async: {
+    requiresSession: true,
+    handler: (session, params) => dispatchAsyncAction(session, params),
+  },
+  relay_dispatch_status: {
+    requiresSession: true,
+    handler: (session, params) => dispatchStatusAction(session, params),
+  },
+  relay_dispatch_recover: {
+    requiresSession: true,
+    handler: (session, params) => dispatchRecoverAction(session, params),
+  },
   relay_send_wait: {
     requiresSession: true,
     handler: (session, params) => sendWaitAction(session, params),
@@ -38,21 +50,9 @@ const CLI_COMMANDS = {
     requiresSession: true,
     handler: (session, params) => dispatchAction(session, params),
   },
-  relay_dispatch_async: {
-    requiresSession: true,
-    handler: (session, params) => dispatchAsyncAction(session, params),
-  },
-  relay_dispatch_status: {
-    requiresSession: false,
-    handler: (_session, params) => dispatchStatusAction(params),
-  },
   relay_dispatch_deliver: {
     requiresSession: true,
     handler: (session, params) => dispatchDeliverAction(session, params),
-  },
-  relay_dispatch_recover: {
-    requiresSession: true,
-    handler: (session, params) => dispatchRecoverAction(session, params),
   },
 };
 
@@ -88,13 +88,23 @@ function usageText(commands = CLI_COMMANDS) {
     "Usage:",
     "  node src/cli.js <command> [--json] [--params-file <file>] [--params-json <json>] [--message-file <file>] [command flags]",
     "",
+    "Decision guide:",
+    "  1. Same bound thread recurring work -> official Codex thread automation, not relay.",
+    "  2. Cross-thread, cross-project, or external wake-ups -> relay_dispatch_async -> relay_dispatch_status -> relay_dispatch_recover.",
+    "  3. Short synchronous probe only -> relay_send_wait or relay_dispatch.",
+    "",
     "Commands:",
     ...Object.keys(commands).map((name) => `  - ${name}`),
     "",
     "Examples:",
     "  node src/cli.js relay_list_projects --json",
-    "  node src/cli.js relay_send_wait --thread-id <thread-id> --message-file .\\prompt.md --timeout-sec 45 --json",
+    "  node src/cli.js relay_dispatch_async --project-id <project-id> --thread-id <thread-id> --message-file .\\prompt.md --timeout-sec 300 --json",
     "  node src/cli.js relay_dispatch_status --dispatch-id <dispatch-id> --json",
+    "  node src/cli.js relay_dispatch_recover --dispatch-id <dispatch-id> --json",
+    "  node src/cli.js relay_send_wait --thread-id <thread-id> --message-file .\\probe.md --timeout-sec 45 --json",
+    "",
+    "JSON advisory fields:",
+    "  usageRole, recommendedSurface, recommendedPattern, whenToUse, whenNotToUse, selectionRule, nextActionSummary",
   ].join("\n");
 }
 

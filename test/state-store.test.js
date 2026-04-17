@@ -174,3 +174,61 @@ test("dispatch records persist async dispatch state and worker leases", async (t
   });
   assert.equal(await getActiveDispatchLease("dispatch-1"), null);
 });
+
+test("getActiveDispatchLease clears a stale worker lease when ownerPid is no longer alive", async (t) => {
+  const relayHome = await withRelayHome(t);
+
+  await createDispatchRecord({
+    dispatchId: "dispatch-stale-worker",
+    projectId: "C:\\Trusted\\Relay",
+    threadId: "thread-1",
+    threadName: "relay target",
+    message: "reply exactly relay async",
+    timeoutSec: 90,
+    created: false,
+    resolution: "by_thread_id",
+    callbackThreadId: null,
+    callbackStatus: "not_requested",
+    dispatchStatus: "running",
+    createdAt: "2026-04-13T02:00:00.000Z",
+    acceptedAt: "2026-04-13T02:00:00.000Z",
+    updatedAt: "2026-04-13T02:00:00.000Z",
+  });
+
+  const lease = await acquireDispatchLease({
+    dispatchId: "dispatch-stale-worker",
+    ttlMs: 60_000,
+  });
+
+  const impossiblePid = 999_999_999;
+  const statePath = relayStatePath();
+  const lockPath = path.join(
+    relayHome,
+    "locks",
+    `dispatch-${Buffer.from("dispatch-stale-worker").toString("base64url")}.lease.json`,
+  );
+
+  const state = JSON.parse(await fs.readFile(statePath, "utf8"));
+  state.dispatchLeases = state.dispatchLeases.map((entry) =>
+    entry.dispatchId === "dispatch-stale-worker"
+      ? { ...entry, ownerPid: impossiblePid }
+      : entry);
+  await fs.writeFile(statePath, JSON.stringify(state, null, 2), "utf8");
+
+  const fileLease = JSON.parse(await fs.readFile(lockPath, "utf8"));
+  fileLease.ownerPid = impossiblePid;
+  await fs.writeFile(lockPath, JSON.stringify(fileLease, null, 2), "utf8");
+
+  assert.equal(await getActiveDispatchLease("dispatch-stale-worker"), null);
+  await assert.doesNotReject(() =>
+    acquireDispatchLease({
+      dispatchId: "dispatch-stale-worker",
+      ttlMs: 60_000,
+    }),
+  );
+
+  await releaseDispatchLease({
+    dispatchId: "dispatch-stale-worker",
+    leaseId: lease.leaseId,
+  }).catch(() => {});
+});

@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
-import { buildEnvelope, epochishToIso, extractTurnReply, isSuccessfulTurn, normalizeTimeoutSeconds } from "./app-server-client.js";
+import { buildEnvelope, epochishToIso, extractTurnReply, isSuccessfulTurn, isTerminalTurn, normalizeTimeoutSeconds } from "./app-server-client.js";
 import { normalizeRelayError, relayError } from "./errors.js";
 import {
   filterThreadsForProject,
@@ -38,6 +38,78 @@ const CALLBACK_EVENT_TYPE = "codex.relay.dispatch.completed.v1";
 const CALLBACK_EVENT_JSON_START = "BEGIN_CODEX_RELAY_CALLBACK_JSON";
 const CALLBACK_EVENT_JSON_END = "END_CODEX_RELAY_CALLBACK_JSON";
 const CALLBACK_PENDING_RETRY_DELAYS_MS = [3_000, 7_000, 15_000];
+const RELAY_USAGE_ROLE = "bridge";
+
+function relaySurfaceWhenToUse(surface) {
+  if (surface === "thread_automation") {
+    return "Use official thread automation when the work should continue inside the same bound project thread and preserve thread context.";
+  }
+  if (surface === "async_relay") {
+    return "Use async relay when the wake-up must cross threads or projects, come from an external scheduler, or otherwise cannot start inside the bound thread.";
+  }
+  return "Use manual relay only for one-off inspection, debugging, or operator-driven recovery.";
+}
+
+function relaySurfaceWhenNotToUse(surface) {
+  if (surface === "thread_automation") {
+    return "Do not keep routing recurring same-thread work through relay when the bound thread can wake itself directly.";
+  }
+  if (surface === "async_relay") {
+    return "Do not use async relay as the default for same-thread recurring work that already belongs on the bound thread.";
+  }
+  return "Do not use manual relay as a substitute for durable async dispatch or bound-thread automation.";
+}
+
+function relayPatternSelectionRule(pattern) {
+  if (pattern === "async_dispatch") {
+    return "Choose this pattern when you are starting fresh long-running bridge work and need a durable dispatch record.";
+  }
+  if (pattern === "move_to_bound_thread") {
+    return "Choose this pattern when the relay request revealed that the real work belongs on the bound thread or an existing active dispatch.";
+  }
+  return "Choose this pattern when a dispatch already exists and you need to inspect status before deciding whether recovery is still necessary.";
+}
+
+function relayPatternNextAction(pattern) {
+  if (pattern === "async_dispatch") {
+    return "Enqueue with relay_dispatch_async, then observe progress with relay_dispatch_status.";
+  }
+  if (pattern === "move_to_bound_thread") {
+    return "Move the recurring work to the bound thread, or inspect and recover the active dispatch before sending anything else.";
+  }
+  return "Check relay_dispatch_status first, then use relay_dispatch_recover only when the dispatch still needs explicit recovery.";
+}
+
+function buildRelayAdvisory({
+  recommendedSurface = "async_relay",
+  recommendedPattern = "status_then_recover",
+} = {}) {
+  return {
+    usageRole: RELAY_USAGE_ROLE,
+    recommendedSurface,
+    recommendedPattern,
+    whenToUse: relaySurfaceWhenToUse(recommendedSurface),
+    whenNotToUse: relaySurfaceWhenNotToUse(recommendedSurface),
+    selectionRule: relayPatternSelectionRule(recommendedPattern),
+    nextActionSummary: relayPatternNextAction(recommendedPattern),
+  };
+}
+
+function formatRelayAdvisoryLines(payload) {
+  if (!payload?.usageRole || !payload?.recommendedSurface || !payload?.recommendedPattern) {
+    return [];
+  }
+
+  return [
+    `Usage role: ${payload.usageRole}.`,
+    `Recommended surface: ${payload.recommendedSurface}.`,
+    `Recommended pattern: ${payload.recommendedPattern}.`,
+    payload.whenToUse ? `When to use: ${payload.whenToUse}` : null,
+    payload.whenNotToUse ? `When not to use: ${payload.whenNotToUse}` : null,
+    payload.selectionRule ? `Selection rule: ${payload.selectionRule}` : null,
+    payload.nextActionSummary ? `Recommended next step: ${payload.nextActionSummary}` : null,
+  ].filter(Boolean);
+}
 
 function isTransientRolloutLoadFailure(error) {
   const message = error instanceof Error ? error.message : String(error);
@@ -97,6 +169,7 @@ function formatAsyncDispatchAcceptedText(payload) {
     `Accepted async relay dispatch ${payload.dispatchId}.`,
     `Target thread: ${payload.threadName} [${payload.threadId}] (${payload.resolution}).`,
     `Callback requested: ${payload.callbackRequested ? "yes" : "no"}.`,
+    ...formatRelayAdvisoryLines(payload),
     `Relay state: ${payload.statePath}`,
   ].join("\n");
 }
@@ -106,6 +179,7 @@ function formatDispatchStatusText(payload) {
     `Dispatch ${payload.dispatchId}: ${payload.dispatchStatus}.`,
     `Callback: ${payload.callbackStatus}.`,
     `Target thread: ${payload.threadName} [${payload.threadId}].`,
+    ...formatRelayAdvisoryLines(payload),
     payload.recoverySuggested ? `Recovery: ${payload.recoverySuggested}.` : null,
     payload.replyText ? `Reply: ${payload.replyText}` : null,
     payload.errorCode ? `Error: [${payload.errorCode}] ${payload.errorMessage}` : null,
@@ -120,6 +194,7 @@ function formatActiveBusyDispatchText(payload) {
     `Target thread ${payload.threadName} [${payload.threadId}] is still busy with relay dispatch ${payload.dispatchId}; the new message was not delivered.`,
     payload.turnId ? `Active turn: ${payload.turnId}.` : null,
     `Dispatch ${payload.dispatchId}: ${payload.dispatchStatus}.`,
+    ...formatRelayAdvisoryLines(payload),
     payload.recoverySuggested ? `Recovery: ${payload.recoverySuggested}.` : null,
     payload.replyText ? `Reply: ${payload.replyText}` : null,
     payload.errorCode ? `Error: [${payload.errorCode}] ${payload.errorMessage}` : null,
@@ -147,6 +222,7 @@ function formatRecoverStatusText(payload) {
     `Dispatch ${payload.dispatchId} recovery action: ${payload.recoveryAction ?? "none"}.`,
     `Dispatch status: ${payload.dispatchStatus}.`,
     `Callback: ${payload.callbackStatus}.`,
+    ...formatRelayAdvisoryLines(payload),
     payload.replyText ? `Reply: ${payload.replyText}` : null,
     payload.errorCode ? `Error: [${payload.errorCode}] ${payload.errorMessage}` : null,
     payload.callbackErrorCode ? `Callback error: [${payload.callbackErrorCode}] ${payload.callbackErrorMessage}` : null,
@@ -161,6 +237,7 @@ function formatRecoverBatchText(payload) {
     return [
       `Recovered 0 dispatch(es) from ${payload.scannedCount} scanned.`,
       payload.projectId ? `Project: ${payload.projectId}` : null,
+      ...formatRelayAdvisoryLines(payload),
       `Relay state: ${payload.statePath}`,
     ]
       .filter(Boolean)
@@ -170,6 +247,7 @@ function formatRecoverBatchText(payload) {
   return [
     `Recovered ${payload.recovered.length} dispatch(es) from ${payload.scannedCount} scanned.`,
     payload.projectId ? `Project: ${payload.projectId}` : null,
+    ...formatRelayAdvisoryLines(payload),
     ...payload.recovered.map((item) =>
       `- ${item.dispatchId}: ${item.recoveryAction ?? "none"} -> ${item.dispatchStatus} / ${item.callbackStatus}`,
     ),
@@ -317,7 +395,7 @@ async function inspectDispatchRuntime(record) {
   };
 }
 
-function buildDispatchStatusPayload(record, runtime = {}) {
+function buildDispatchStatusPayload(record, runtime = {}, advisory = {}) {
   return {
     dispatchId: record.dispatchId,
     dispatchStatus: record.dispatchStatus,
@@ -344,6 +422,7 @@ function buildDispatchStatusPayload(record, runtime = {}) {
     recoverySuggested: runtime.recoverySuggested ?? undefined,
     warning: runtime.warning ?? undefined,
     statePath: relayStatePath(),
+    ...buildRelayAdvisory(advisory),
   };
 }
 
@@ -430,8 +509,12 @@ async function annotateActiveThreadLeaseError(error) {
     activeDispatchStatus,
     activeTurnId,
     recoverySuggested: "Use relay_dispatch_status or relay_dispatch_recover with the active dispatch id.",
+    ...buildRelayAdvisory({
+      recommendedSurface: "thread_automation",
+      recommendedPattern: "move_to_bound_thread",
+    }),
   };
-  normalized.message = `Thread ${activeLease.threadId ?? normalized.details?.threadId ?? "unknown"} already has an active relay dispatch lease from dispatch ${activeDispatchId} (${activeDispatchStatus}${activeTurnId ? `, turn ${activeTurnId}` : ""}). Use relay_dispatch_status or relay_dispatch_recover before sending another message.`;
+  normalized.message = `Thread ${activeLease.threadId ?? normalized.details?.threadId ?? "unknown"} already has an active relay dispatch lease from dispatch ${activeDispatchId} (${activeDispatchStatus}${activeTurnId ? `, turn ${activeTurnId}` : ""}). Use relay_dispatch_status or relay_dispatch_recover before sending another message. For same-thread recurring work, prefer official Codex thread automations on the bound thread instead of treating relay as the main control surface.`;
   return normalized;
 }
 
@@ -449,7 +532,14 @@ async function buildActiveBusyDispatchResult(error) {
     return null;
   }
 
-  const payload = buildDispatchStatusPayload(record, await inspectDispatchRuntime(record));
+  const payload = buildDispatchStatusPayload(
+    record,
+    await inspectDispatchRuntime(record),
+    {
+      recommendedSurface: "thread_automation",
+      recommendedPattern: "move_to_bound_thread",
+    },
+  );
   return {
     text: formatActiveBusyDispatchText(payload),
     payload: {
@@ -657,6 +747,127 @@ async function syncDispatchTurnIdFromLease(record, runtime = null) {
     dispatchStatus: current.dispatchStatus === "queued" ? "running" : current.dispatchStatus,
     updatedAt: new Date().toISOString(),
   })) ?? record;
+}
+
+function buildRecordedTurnFailureError(record, turn) {
+  const status = typeof turn?.status === "string" ? turn.status : turn?.status?.type;
+  const detail = turn?.error?.message || status || "unknown";
+  return normalizeDispatchTerminalError(relayError("target_turn_failed", `Target turn failed: ${detail}`, {
+    threadId: record.threadId,
+    turnId: record.turnId,
+    detail,
+  }));
+}
+
+async function readRecordedTurnSnapshot(session, record) {
+  if (!record.turnId) {
+    return null;
+  }
+
+  try {
+    const response = await session.request(
+      "thread/read",
+      {
+        threadId: record.threadId,
+        includeTurns: true,
+      },
+      session.requestTimeoutMs,
+    );
+    const turns = response?.result?.thread?.turns ?? [];
+    return turns.find((item) => item.id === record.turnId) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function computeRecordedTurnTimingMs(record, completedAt) {
+  const acceptedAtMs = Date.parse(record.acceptedAt ?? "");
+  const completedAtMs = Date.parse(completedAt ?? "");
+  if (!Number.isFinite(acceptedAtMs) || !Number.isFinite(completedAtMs)) {
+    return record.timingMs ?? undefined;
+  }
+
+  return Math.max(0, completedAtMs - acceptedAtMs);
+}
+
+async function refreshDispatchRecordFromRecordedTurn(session, record, runtime = null) {
+  if (!session || !record.turnId) {
+    return { record, runtime: runtime ?? await inspectDispatchRuntime(record) };
+  }
+
+  const activeRuntime = runtime ?? await inspectDispatchRuntime(record);
+  if (activeRuntime.dispatchLeaseActive) {
+    return { record, runtime: activeRuntime };
+  }
+
+  const turn = await readRecordedTurnSnapshot(session, record);
+  if (!turn || !isTerminalTurn(turn)) {
+    return { record, runtime: activeRuntime };
+  }
+
+  const matchingLease = await getActiveThreadLease(record.threadId);
+  if (matchingLease?.turnId === record.turnId) {
+    await releaseThreadLease({
+      threadId: record.threadId,
+      leaseId: matchingLease.leaseId,
+    });
+  }
+
+  let refreshedRecord;
+  if (isSuccessfulTurn(turn)) {
+    const replyText = extractTurnReply(turn);
+    if (!replyText) {
+      const terminalError = normalizeDispatchTerminalError(relayError("reply_missing", "Target thread completed but returned no final text.", {
+        threadId: record.threadId,
+        turnId: record.turnId,
+      }));
+      refreshedRecord = await updateDispatchRecord(record.dispatchId, (current) => ({
+        ...current,
+        dispatchStatus: terminalError.dispatchStatus,
+        errorCode: terminalError.errorCode,
+        errorMessage: terminalError.errorMessage,
+        updatedAt: new Date().toISOString(),
+      })) ?? record;
+    } else {
+      const completedAt = epochishToIso(turn?.completedAt) || new Date().toISOString();
+      await rememberThreadTurnResult(
+        {
+          projectId: record.projectId,
+          name: record.projectId,
+        },
+        {
+          threadId: record.threadId,
+          name: record.threadName,
+          createdAt: record.acceptedAt ?? completedAt,
+        },
+        record.turnId,
+        completedAt,
+      );
+      refreshedRecord = await updateDispatchRecord(record.dispatchId, (current) => ({
+        ...current,
+        dispatchStatus: "succeeded",
+        replyText,
+        errorCode: null,
+        errorMessage: null,
+        timingMs: computeRecordedTurnTimingMs(current, completedAt),
+        updatedAt: new Date().toISOString(),
+      })) ?? record;
+    }
+  } else {
+    const terminalError = buildRecordedTurnFailureError(record, turn);
+    refreshedRecord = await updateDispatchRecord(record.dispatchId, (current) => ({
+      ...current,
+      dispatchStatus: terminalError.dispatchStatus,
+      errorCode: terminalError.errorCode,
+      errorMessage: terminalError.errorMessage,
+      updatedAt: new Date().toISOString(),
+    })) ?? record;
+  }
+
+  return {
+    record: refreshedRecord,
+    runtime: await inspectDispatchRuntime(refreshedRecord),
+  };
 }
 
 function isActionableRecovery(runtime) {
@@ -1135,16 +1346,24 @@ export async function deliverMessageToThread(session, options) {
             recoveryStatePath: relayStatePath(),
             recoverySuggested: "Use relay_dispatch_status or relay_dispatch_recover with this dispatch id.",
             recoveryWarning: recovery.schedulingWarning ?? undefined,
+            ...buildRelayAdvisory({
+              recommendedSurface: "thread_automation",
+              recommendedPattern: "status_then_recover",
+            }),
           };
           normalized.message = recovery.backgroundRecoveryScheduled
-            ? `${normalized.message} Recovery dispatch ${recovery.dispatchId} is continuing in background.`
-            : `${normalized.message} Recovery dispatch ${recovery.dispatchId} was recorded for manual recovery.`;
+            ? `${normalized.message} Recovery dispatch ${recovery.dispatchId} is continuing in background. For same-thread recurring work, prefer official Codex thread automations on the bound thread; relay should stay in bridge/recovery mode here.`
+            : `${normalized.message} Recovery dispatch ${recovery.dispatchId} was recorded for manual recovery. For same-thread recurring work, prefer official Codex thread automations on the bound thread; relay should stay in bridge/recovery mode here.`;
         } catch (recoveryError) {
           const recoveryFailure = normalizeRelayError(recoveryError);
           normalized.details = {
             ...normalized.details,
             recoverySuggested: "Wait for the active thread lease to expire, or inspect the target thread manually before replaying.",
             recoveryRecordingError: recoveryFailure.message,
+            ...buildRelayAdvisory({
+              recommendedSurface: "thread_automation",
+              recommendedPattern: "status_then_recover",
+            }),
           };
         }
       }
@@ -1700,6 +1919,10 @@ export async function dispatchAsyncAction(session, {
     acceptedAt: record.acceptedAt,
     callbackRequested: Boolean(record.callbackThreadId),
     statePath: relayStatePath(),
+    ...buildRelayAdvisory({
+      recommendedSurface: "async_relay",
+      recommendedPattern: "async_dispatch",
+    }),
   };
   return {
     text: formatAsyncDispatchAcceptedText(payload),
@@ -1707,7 +1930,9 @@ export async function dispatchAsyncAction(session, {
   };
 }
 
-export async function dispatchStatusAction({ dispatchId }) {
+export async function dispatchStatusAction(sessionOrParams, maybeParams = null) {
+  const session = maybeParams ? sessionOrParams : null;
+  const { dispatchId } = maybeParams ?? sessionOrParams;
   const record = await getDispatchRecord(dispatchId);
   if (!record) {
     throw relayError("dispatch_not_found", `Dispatch not found: ${dispatchId}`, {
@@ -1715,7 +1940,11 @@ export async function dispatchStatusAction({ dispatchId }) {
     });
   }
 
-  const payload = buildDispatchStatusPayload(record, await inspectDispatchRuntime(record));
+  const initialRuntime = await inspectDispatchRuntime(record);
+  const syncedRecord = await syncDispatchTurnIdFromLease(record, initialRuntime);
+  const syncedRuntime = syncedRecord === record ? initialRuntime : await inspectDispatchRuntime(syncedRecord);
+  const refreshed = await refreshDispatchRecordFromRecordedTurn(session, syncedRecord, syncedRuntime);
+  const payload = buildDispatchStatusPayload(refreshed.record, refreshed.runtime);
   return {
     text: formatDispatchStatusText(payload),
     payload,
@@ -1875,6 +2104,10 @@ export async function dispatchRecoverAction(session, { dispatchId, projectId, ca
     scannedCount: records.length,
     recoveredCount: recovered.length,
     statePath: relayStatePath(),
+    ...buildRelayAdvisory({
+      recommendedSurface: "async_relay",
+      recommendedPattern: "status_then_recover",
+    }),
   };
   return {
     text: formatRecoverBatchText(payload),

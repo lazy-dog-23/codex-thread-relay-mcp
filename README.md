@@ -4,7 +4,7 @@
 
 `codex-thread-relay-mcp` lets one Codex App thread send work to another thread and get the result back, including across different projects or sessions.
 
-This repository provides that thread-communication layer as an MCP server: trusted-project lookup, thread create/reuse, synchronous dispatch, asynchronous callback delivery, status queries, and recovery.
+This repository provides that bridge/recovery transport layer as an MCP server: trusted-project lookup, thread create/reuse, asynchronous dispatch, status queries, recovery, callback delivery, and short synchronous probes. It is not the primary same-thread autonomy control bus; official Codex thread automations should own that path when the bound thread can keep working in place.
 
 ## What It Talks To
 
@@ -67,8 +67,9 @@ Replace the example path values before using the config, then restart the Codex 
 
 - If the relay tools do not appear in Codex, check the MCP config path and restart the Codex App.
 - If `smoke` fails early, confirm the Codex App is running and the target project is already trusted by the Windows Codex App.
+- If relay or official thread automation keeps behaving like an older build after an update, restart the Codex App so the MCP server and automation runtime reload the new code paths.
 - If async callback delivery stays `pending`, check whether the source thread is busy, then use `relay_dispatch_deliver` or `relay_dispatch_recover`.
-- If `relay_send_wait` or synchronous `relay_dispatch` times out on a long target turn, the timeout now includes a `recoveryDispatchId`. Use `relay_dispatch_status` to inspect progress, `relay_dispatch_recover` to resume waiting explicitly, and prefer `relay_dispatch_async` for long-running autonomy loops.
+- If `relay_send_wait` or synchronous `relay_dispatch` times out on a long target turn, the timeout now includes a `recoveryDispatchId` plus bridge advisory fields. Use `relay_dispatch_status` to inspect progress, `relay_dispatch_recover` to resume waiting explicitly, prefer `relay_dispatch_async` for long-running relay work, and prefer official thread automations for same-thread recurring autonomy loops.
 
 ## Recent Validation (2026-04-14)
 
@@ -91,17 +92,27 @@ The recovery path was validated again on a real bound Windows Codex App thread:
 
 That makes the recovery claim more concrete: on a real thread, `long turn -> send_wait timeout -> dispatch_status success -> follow-up send succeeds` is now proven. The remaining unverified piece in this session is only the system-level `Task Scheduler` wake-up layer; the delegated environment used for this run could not register Windows scheduled tasks or spawn a fresh app-server from the runner.
 
+## Recent Validation (2026-04-17)
+
+The later live check separated a stale runtime sample from the current 26.415 operating path on the same bound thread:
+
+1. An earlier same-thread heartbeat sample on this machine had behaved like a stale runtime: timing advanced without a new turn.
+2. After restarting the Codex App and reloading the updated MCP/runtime code, the same bound-thread heartbeat path produced new in-thread turns again.
+3. That confirms the intended split: official thread automation is the primary same-thread continuation surface, while relay remains the bridge and recovery layer for cross-thread, cross-project, or external wake-ups.
+
+Outcome: do not treat relay as the default same-thread control bus. Use official thread automation when the bound thread can keep working in place; keep relay focused on transport, status, and recovery.
+
 ## Public Tools
 
 - `relay_list_projects()`
 - `relay_list_threads({ projectId, query? })`
 - `relay_create_thread({ projectId, name? })`
-- `relay_send_wait({ threadId, message, timeoutSec? })`
-- `relay_dispatch({ projectId, message, threadId?, threadName?, query?, createIfMissing?, timeoutSec? })`
 - `relay_dispatch_async({ projectId, message, threadId?, threadName?, query?, createIfMissing?, callbackThreadId?, timeoutSec? })`
 - `relay_dispatch_status({ dispatchId })`
-- `relay_dispatch_deliver({ dispatchId, callbackThreadId? })`
 - `relay_dispatch_recover({ dispatchId?, projectId?, callbackThreadId?, limit? })`
+- `relay_send_wait({ threadId, message, timeoutSec? })`
+- `relay_dispatch({ projectId, message, threadId?, threadName?, query?, createIfMissing?, timeoutSec? })`
+- `relay_dispatch_deliver({ dispatchId, callbackThreadId? })`
 
 Dispatch resolution order is fixed:
 
@@ -116,19 +127,21 @@ The relay now also exposes a direct CLI entrypoint for non-interactive runners s
 
 ```powershell
 node src/cli.js relay_list_projects --json
-node src/cli.js relay_send_wait --thread-id <thread-id> --message-file .\prompt.md --timeout-sec 45 --json
+node src/cli.js relay_dispatch_async --project-id <project-id> --thread-id <thread-id> --message-file .\prompt.md --timeout-sec 300 --json
 node src/cli.js relay_dispatch_status --dispatch-id <dispatch-id> --json
 node src/cli.js relay_dispatch_recover --dispatch-id <dispatch-id> --json
+node src/cli.js relay_send_wait --thread-id <thread-id> --message-file .\probe.md --timeout-sec 45 --json
 ```
 
 CLI behavior:
 
 - uses the same durable dispatch, lease, busy, timeout, and recovery semantics as the MCP tools
 - returns machine-readable JSON with `ok`, `command`, `payload`, and relay error metadata when `--json` is set
+- includes bridge advisory fields such as `usageRole`, `recommendedSurface`, `recommendedPattern`, `whenToUse`, `whenNotToUse`, `selectionRule`, and `nextActionSummary`
 - accepts long prompts through `--message-file`
 - does not depend on an LLM turn to call MCP tools on its behalf
 
-This is the supported building block for `Task Scheduler -> relay -> bound thread` chains.
+This is the supported fallback building block for `Task Scheduler -> relay -> bound thread` chains. When the work stays on one already-bound project thread, official Codex thread automations are the primary surface; relay is the supported bridge and recovery fallback when the wake-up must start outside that thread.
 
 ## Error Model
 
@@ -216,13 +229,12 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1
 - `soak`: longer async callback and recovery pressure runs
 - `audit:official`: dependency audit against the official npm registry
 
-## Example Flow
+## Agent Decision Guide
 
-1. Call `relay_list_projects`
-2. Pick a trusted target project
-3. Call `relay_dispatch` for the shortest happy path
-4. Fall back to `relay_list_threads` / `relay_create_thread` / `relay_send_wait` when you need finer control
-5. For async work, use `relay_dispatch_status` for polling and `relay_dispatch_recover` when callback delivery or worker progress needs explicit recovery; omit `dispatchId` to batch-sweep stale dispatches for one project
+1. Same bound thread recurring work: use official Codex thread automations, not relay.
+2. Cross-thread, cross-project, or external wake-up: use `relay_dispatch_async` as the default bridge path.
+3. Timeout or busy after a dispatch already exists: use `relay_dispatch_status` first, then `relay_dispatch_recover` only when explicit recovery is still needed.
+4. Short synchronous probe only: use `relay_send_wait` or synchronous `relay_dispatch`.
 
 ## Scope Limits In This Version
 

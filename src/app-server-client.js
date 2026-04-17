@@ -275,32 +275,87 @@ export class CodexAppServerSession {
     }
   }
 
+  ingestTurnSnapshot(threadId, turn) {
+    if (!turn?.id) {
+      return null;
+    }
+
+    const state = this.ensureTurnState(turn.id, threadId);
+    if (isTerminalTurn(turn)) {
+      state.completedTurn = turn;
+    } else {
+      state.startedTurn = turn;
+    }
+
+    if (turn.error) {
+      state.error = turn.error;
+    }
+
+    const items = Array.isArray(turn.items) ? turn.items : [];
+    for (const item of items) {
+      if (!item?.id) {
+        continue;
+      }
+      if (!state.itemOrder.includes(item.id)) {
+        state.itemOrder.push(item.id);
+      }
+      state.itemsById.set(item.id, item);
+    }
+
+    return state;
+  }
+
+  async readTurnSnapshot(threadId, turnId) {
+    const response = await this.request(
+      "thread/read",
+      {
+        threadId,
+        includeTurns: true,
+      },
+      this.requestTimeoutMs,
+    );
+    const turns = response?.result?.thread?.turns ?? [];
+    const turn = turns.find((item) => item.id === turnId);
+    if (!turn) {
+      return null;
+    }
+
+    this.ingestTurnSnapshot(threadId, turn);
+    return turn;
+  }
+
   async waitForTurn(threadId, turnId, timeoutMs = this.turnTimeoutMs) {
     const existing = this.ensureTurnState(turnId, threadId);
     if (existing.completedTurn && isTerminalTurn(existing.completedTurn)) {
       return this.materializeTurn(turnId);
     }
 
+    try {
+      const snapshot = await this.readTurnSnapshot(threadId, turnId);
+      if (snapshot && isTerminalTurn(snapshot)) {
+        return this.materializeTurn(turnId);
+      }
+    } catch {}
+
     return new Promise((resolve, reject) => {
+      let polling = false;
+      const cleanup = () => {
+        clearTimeout(timer);
+        clearInterval(poller);
+      };
+
       const timer = setTimeout(async () => {
         existing.waiters = existing.waiters.filter((waiter) => waiter !== waiterEntry);
         try {
-          const response = await this.request(
-            "thread/read",
-            {
-              threadId,
-              includeTurns: true,
-            },
-            this.requestTimeoutMs,
-          );
-          const turns = response?.result?.thread?.turns ?? [];
-          const turn = turns.find((item) => item.id === turnId);
+          const turn = await this.readTurnSnapshot(threadId, turnId);
           if (turn && isTerminalTurn(turn)) {
-            resolve(turn);
+            cleanup();
+            resolve(this.materializeTurn(turnId));
             return;
           }
         } catch {}
 
+        cleanup();
         reject(
           makeError(`Timed out while waiting for thread ${threadId} turn ${turnId}`, {
             code: "timeout",
@@ -311,9 +366,28 @@ export class CodexAppServerSession {
         );
       }, timeoutMs);
 
+      const poller = setInterval(async () => {
+        if (polling) {
+          return;
+        }
+        polling = true;
+        try {
+          const turn = await this.readTurnSnapshot(threadId, turnId);
+          if (turn && isTerminalTurn(turn)) {
+            existing.waiters = existing.waiters.filter((waiter) => waiter !== waiterEntry);
+            cleanup();
+            resolve(this.materializeTurn(turnId));
+          }
+        } catch {
+          // Ignore polling failures here and let the main timeout surface the error.
+        } finally {
+          polling = false;
+        }
+      }, this.pollIntervalMs);
+
       const waiterEntry = {
         resolve: () => {
-          clearTimeout(timer);
+          cleanup();
           try {
             resolve(this.materializeTurn(turnId));
           } catch (error) {
@@ -321,7 +395,7 @@ export class CodexAppServerSession {
           }
         },
         reject: (error) => {
-          clearTimeout(timer);
+          cleanup();
           reject(error);
         },
       };

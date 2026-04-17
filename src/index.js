@@ -13,7 +13,7 @@ import {
   listThreadsAction,
   sendWaitAction,
 } from "./relay-service.js";
-import { runLocalTool, runTool } from "./tool-runner.js";
+import { runTool } from "./tool-runner.js";
 
 const server = new McpServer({
   name: "codex-thread-relay-mcp",
@@ -50,44 +50,8 @@ server.tool(
 );
 
 server.tool(
-  "relay_send_wait",
-  "Send one delegated request to an existing local target thread and wait for its final text reply. Long sync timeouts return a recoveryDispatchId for follow-up status or recovery.",
-  {
-    threadId: z.string().min(1),
-    message: z.string().trim().min(1),
-    timeoutSec: z.number().int().positive().max(3600).optional(),
-  },
-  async ({ threadId, message, timeoutSec }) =>
-    runTool((session) => sendWaitAction(session, { threadId, message, timeoutSec })),
-);
-
-server.tool(
-  "relay_dispatch",
-  "Resolve or create a target thread inside a trusted project, send one delegated request, and wait for the final text reply. Long sync timeouts return a recoveryDispatchId for follow-up status or recovery.",
-  {
-    projectId: z.string().min(1),
-    message: z.string().trim().min(1),
-    threadId: z.string().trim().min(1).optional(),
-    threadName: z.string().trim().min(1).max(120).optional(),
-    query: z.string().trim().min(1).optional(),
-    createIfMissing: z.boolean().optional(),
-    timeoutSec: z.number().int().positive().max(3600).optional(),
-  },
-  async ({ projectId, message, threadId, threadName, query, createIfMissing, timeoutSec }) =>
-    runTool((session) => dispatchAction(session, {
-      projectId,
-      message,
-      threadId,
-      threadName,
-      query,
-      createIfMissing,
-      timeoutSec,
-    })),
-);
-
-server.tool(
   "relay_dispatch_async",
-  "Resolve or create a target thread inside a trusted project, enqueue one delegated request asynchronously, and optionally callback another thread on completion.",
+  "Resolve or create a target thread inside a trusted project, enqueue one delegated request asynchronously, and optionally callback another thread on completion. This is the default relay bridge path for long-running delegated work.",
   {
     projectId: z.string().min(1),
     message: z.string().trim().min(1),
@@ -113,12 +77,30 @@ server.tool(
 
 server.tool(
   "relay_dispatch_status",
-  "Read the durable status of a previously accepted async relay dispatch.",
+  "Read the durable status of a previously accepted relay dispatch. Use this first after timeout or when a busy target reports an active dispatch.",
   {
     dispatchId: z.string().trim().min(1),
   },
   async ({ dispatchId }) =>
-    runLocalTool(() => dispatchStatusAction({ dispatchId })),
+    runTool((session) => dispatchStatusAction(session, { dispatchId })),
+);
+
+server.tool(
+  "relay_dispatch_recover",
+  "Recover one relay dispatch, or batch-recover pending or stale relay dispatches when that is safe. Use this after status shows the dispatch still needs explicit recovery.",
+  {
+    dispatchId: z.string().trim().min(1).optional(),
+    projectId: z.string().trim().min(1).optional(),
+    callbackThreadId: z.string().trim().min(1).optional(),
+    limit: z.number().int().positive().max(20).optional(),
+  },
+  async ({ dispatchId, projectId, callbackThreadId, limit }) =>
+    runTool((session) => dispatchRecoverAction(session, {
+      dispatchId,
+      projectId,
+      callbackThreadId,
+      limit,
+    })),
 );
 
 server.tool(
@@ -133,20 +115,38 @@ server.tool(
 );
 
 server.tool(
-  "relay_dispatch_recover",
-  "Recover one async relay dispatch, or batch-recover pending/stale async relay dispatches when that is safe.",
+  "relay_send_wait",
+  "Send one short delegated request to an existing local target thread and wait for its text reply. Keep this for short probes; for recurring same-thread work prefer official thread automations, and for long relay work prefer async -> status -> recover.",
   {
-    dispatchId: z.string().trim().min(1).optional(),
-    projectId: z.string().trim().min(1).optional(),
-    callbackThreadId: z.string().trim().min(1).optional(),
-    limit: z.number().int().positive().max(20).optional(),
+    threadId: z.string().min(1),
+    message: z.string().trim().min(1),
+    timeoutSec: z.number().int().positive().max(3600).optional(),
   },
-  async ({ dispatchId, projectId, callbackThreadId, limit }) =>
-    runTool((session) => dispatchRecoverAction(session, {
-      dispatchId,
+  async ({ threadId, message, timeoutSec }) =>
+    runTool((session) => sendWaitAction(session, { threadId, message, timeoutSec })),
+);
+
+server.tool(
+  "relay_dispatch",
+  "Resolve or create a target thread inside a trusted project, send one delegated request, and wait for a short sync reply. Keep this for bounded sync checks; for durable bridge work prefer async -> status -> recover.",
+  {
+    projectId: z.string().min(1),
+    message: z.string().trim().min(1),
+    threadId: z.string().trim().min(1).optional(),
+    threadName: z.string().trim().min(1).max(120).optional(),
+    query: z.string().trim().min(1).optional(),
+    createIfMissing: z.boolean().optional(),
+    timeoutSec: z.number().int().positive().max(3600).optional(),
+  },
+  async ({ projectId, message, threadId, threadName, query, createIfMissing, timeoutSec }) =>
+    runTool((session) => dispatchAction(session, {
       projectId,
-      callbackThreadId,
-      limit,
+      message,
+      threadId,
+      threadName,
+      query,
+      createIfMissing,
+      timeoutSec,
     })),
 );
 

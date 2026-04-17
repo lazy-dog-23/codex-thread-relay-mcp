@@ -14,8 +14,8 @@ test("normalizeWindowsPath strips extended prefixes and normalizes slashes", () 
     "C:\\Users\\Administrator\\Desktop\\Project\\test\\codex-thread-relay-mcp",
   );
   assert.equal(
-    normalizeWindowsPathKey("C:/Users/Administrator/Desktop/Project/Test/Repo"),
-    "c:\\users\\administrator\\desktop\\project\\test\\repo",
+    normalizeWindowsPathKey("C:/Example/Project/Test/Repo"),
+    "c:\\example\\project\\test\\repo",
   );
 });
 

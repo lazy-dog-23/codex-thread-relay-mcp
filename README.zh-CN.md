@@ -4,7 +4,7 @@
 
 `codex-thread-relay-mcp` 的作用很直接：让一个 Codex App 线程把消息发到另一个线程，再把结果回传回来，支持跨项目、跨会话。
 
-这个仓库提供的就是这层线程通信能力：trusted project 查询、线程创建/复用、同步 dispatch、异步 callback、状态查询和恢复。
+这个仓库提供的是 bridge / recovery transport 这一层：trusted project 查询、线程创建/复用、异步 dispatch、状态查询、恢复、callback 回传，以及短同步探测。它不再承担“同线程自治主总线”的角色；当绑定线程本身就能持续推进时，应该优先使用官方 Codex thread automation。
 
 ## 它会和什么交互
 
@@ -66,9 +66,10 @@ THREAD_RELAY_CODEX_HOME = "<path-to-your-codex-home>"
 ## 常见问题
 
 - 如果 Codex 里看不到 relay 工具，先检查 MCP 配置路径，再重启 Codex App。
+- 如果更新后 relay 或官方 thread automation 还表现得像旧版本，先重启 Codex App，让 MCP server 和 automation runtime 真正重载到新代码路径。
 - 如果 `smoke` 很早就失败，先确认 Codex App 正在运行，并且目标项目已经被 Windows Codex App 标记为 trusted。
 - 如果 async callback 长时间停在 `pending`，先看源线程是否正忙，再使用 `relay_dispatch_deliver` 或 `relay_dispatch_recover`。
-- 如果 `relay_send_wait` 或同步 `relay_dispatch` 在长回合上超时，现在错误里会带 `recoveryDispatchId`。可以先用 `relay_dispatch_status` 看后台进度，再用 `relay_dispatch_recover` 显式续等；长自治流程仍然优先用 `relay_dispatch_async`。
+- 如果 `relay_send_wait` 或同步 `relay_dispatch` 在长回合上超时，现在错误里会带 `recoveryDispatchId` 和 bridge advisory 字段。可以先用 `relay_dispatch_status` 看后台进度，再用 `relay_dispatch_recover` 显式续等；长 relay 流程优先 `relay_dispatch_async`，同线程持续自治优先官方 thread automation。
 
 ## 近期验证结论（2026-04-14）
 
@@ -91,17 +92,27 @@ THREAD_RELAY_CODEX_HOME = "<path-to-your-codex-home>"
 
 结论更具体了：在真实线程上，`长回合 -> send_wait 超时 -> dispatch_status 成功收口 -> 后续消息继续可发` 已经跑通。剩余未在这次会话里实测的，只是系统级 `Task Scheduler` 唤醒层；当前受限环境无法注册 Windows 计划任务，也不允许 runner 再起一个新的 app-server 子进程，因此未在同一会话里完成系统调度层验收。
 
+## 近期验证结论（2026-04-17）
+
+后续 live 复验把“旧运行时样本”与当前 26.415 的真实工作路径分开了：
+
+1. 这台机器上早先那次 same-thread heartbeat 样本，确实像 stale runtime：时间在推进，但没有新 turn。
+2. 在重启 Codex App、让 MCP 与 automation runtime 真正重载最新代码后，同一个绑定线程上的官方 heartbeat 又能重新产出新 turn。
+3. 这也把分工重新说清楚了：官方 thread automation 是同线程持续推进主路，relay 继续专注在跨线程、跨项目、外部唤醒时的 bridge / recovery transport。
+
+结论：不要再把 relay 当成默认同线程控制总线。只要工作可以留在已绑定线程里持续推进，就优先官方 thread automation；relay 保持 transport、status、recover 这一层。
+
 ## 公开工具
 
 - `relay_list_projects()`
 - `relay_list_threads({ projectId, query? })`
 - `relay_create_thread({ projectId, name? })`
-- `relay_send_wait({ threadId, message, timeoutSec? })`
-- `relay_dispatch({ projectId, message, threadId?, threadName?, query?, createIfMissing?, timeoutSec? })`
 - `relay_dispatch_async({ projectId, message, threadId?, threadName?, query?, createIfMissing?, callbackThreadId?, timeoutSec? })`
 - `relay_dispatch_status({ dispatchId })`
-- `relay_dispatch_deliver({ dispatchId, callbackThreadId? })`
 - `relay_dispatch_recover({ dispatchId?, projectId?, callbackThreadId?, limit? })`
+- `relay_send_wait({ threadId, message, timeoutSec? })`
+- `relay_dispatch({ projectId, message, threadId?, threadName?, query?, createIfMissing?, timeoutSec? })`
+- `relay_dispatch_deliver({ dispatchId, callbackThreadId? })`
 
 `relay_dispatch` 的解析顺序固定为：
 
@@ -116,19 +127,21 @@ THREAD_RELAY_CODEX_HOME = "<path-to-your-codex-home>"
 
 ```powershell
 node src/cli.js relay_list_projects --json
-node src/cli.js relay_send_wait --thread-id <thread-id> --message-file .\prompt.md --timeout-sec 45 --json
+node src/cli.js relay_dispatch_async --project-id <project-id> --thread-id <thread-id> --message-file .\prompt.md --timeout-sec 300 --json
 node src/cli.js relay_dispatch_status --dispatch-id <dispatch-id> --json
 node src/cli.js relay_dispatch_recover --dispatch-id <dispatch-id> --json
+node src/cli.js relay_send_wait --thread-id <thread-id> --message-file .\probe.md --timeout-sec 45 --json
 ```
 
 CLI 的语义和 MCP 工具保持一致：
 
 - 复用同一套 durable dispatch、lease、busy、timeout 和 recover 语义
 - 开启 `--json` 时，输出稳定机读 JSON：`ok`、`command`、`payload` 以及错误元数据
+- JSON 里还会带 bridge advisory 字段：`usageRole`、`recommendedSurface`、`recommendedPattern`、`whenToUse`、`whenNotToUse`、`selectionRule`、`nextActionSummary`
 - 长 prompt 通过 `--message-file` 传入，不需要把大段文本塞进命令行
 - 不依赖一次 LLM turn 替你调用 MCP 工具
 
-这就是 `Task Scheduler -> relay -> 绑定线程` 这条链路的公开触发入口。
+这就是 `Task Scheduler -> relay -> 绑定线程` 这条 fallback bridge 链路的公开触发入口。若工作始终停留在同一个已绑定项目线程内，官方 Codex thread automation 是主路；relay 保留给必须从线程外部发起的 bridge / recovery 场景。
 
 ## 错误模型
 
@@ -207,13 +220,12 @@ npm run audit:official
 - `soak`: 更长时间的 async callback 与恢复压力测试
 - `audit:official`: 强制走官方 npm registry 做依赖审计
 
-## 示例流程
+## Agent 决策指引
 
-1. 调用 `relay_list_projects`
-2. 选择一个 trusted target project
-3. 先用 `relay_dispatch` 走最短 happy path
-4. 需要更细粒度控制时，再退回 `relay_list_threads` / `relay_create_thread` / `relay_send_wait`
-5. 异步场景用 `relay_dispatch_status` 轮询；callback 投递或 worker 进度需要显式恢复时，使用 `relay_dispatch_recover`；不给 `dispatchId` 时可以按单个项目批量扫 stale dispatch
+1. 同一个已绑定线程里的持续工作：优先官方 Codex thread automation，不走 relay。
+2. 跨线程、跨项目、外部唤醒：默认走 `relay_dispatch_async`。
+3. 已有 dispatch 后出现 timeout / busy：先 `relay_dispatch_status`，只有确实还要显式恢复时再 `relay_dispatch_recover`。
+4. 只是做短探测或短同步回包：再用 `relay_send_wait` 或同步 `relay_dispatch`。
 
 ## 当前版本范围限制
 
